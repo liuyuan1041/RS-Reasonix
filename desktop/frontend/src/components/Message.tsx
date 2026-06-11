@@ -1,8 +1,8 @@
 import { memo, useEffect, useState } from "react";
-import { ChevronDown, FileText, Folder, GitBranch, Image, RotateCcw, ScrollText } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
-import { ProcessBrainIcon, ProcessCard, ProcessStatusIcon } from "./ProcessCard";
+import { ProcessBrainIcon } from "./ProcessCard";
 import { parseAttachmentRefsForDisplay, sortDisplayAttachments } from "../lib/attachmentDisplay";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -11,6 +11,48 @@ import type { CheckpointMeta } from "../lib/types";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 export type TurnActionMenu = "summary" | "rewind";
+type ImSourceMessage = {
+  provider: string;
+  label: string;
+  sender: string;
+  chat: string;
+  text: string;
+};
+
+const IM_SOURCE_START = "[[reasonix-im]]";
+const IM_SOURCE_END = "[[/reasonix-im]]";
+
+function parseImSourceMessage(text: string): ImSourceMessage | null {
+  // Display-only metadata: keep IM sender/chat details out of model prompts.
+  if (!text.startsWith(IM_SOURCE_START)) return null;
+  const end = text.indexOf(IM_SOURCE_END);
+  if (end < 0) return null;
+  const metaBlock = text.slice(IM_SOURCE_START.length, end).trim();
+  const body = text.slice(end + IM_SOURCE_END.length).replace(/^\r?\n/, "");
+  const meta: Record<string, string> = {};
+  for (const line of metaBlock.split(/\r?\n/)) {
+    const index = line.indexOf("=");
+    if (index <= 0) continue;
+    const key = line.slice(0, index).trim().toLowerCase();
+    const value = line.slice(index + 1).trim();
+    if (key) meta[key] = value;
+  }
+  return {
+    provider: meta.provider || "",
+    label: meta.label || "",
+    sender: meta.sender || meta.senderid || "",
+    chat: meta.chat || meta.chat_type || "",
+    text: body,
+  };
+}
+
+function imSourceLabel(source: ImSourceMessage, t: ReturnType<typeof useT>): string {
+  if (source.label.trim()) return source.label.trim();
+  const provider = source.provider.trim().toLowerCase();
+  if (provider === "lark") return "Lark";
+  if (provider === "weixin" || provider === "wechat") return t("settings.botWeixin");
+  return t("settings.botFeishu");
+}
 
 function attachmentIcon(kind: "image" | "file" | "folder") {
   if (kind === "image") return <Image size={15} />;
@@ -30,8 +72,10 @@ export function UserMessage({
   anchorId?: string;
 }) {
   const t = useT();
-  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(text);
+  const imSource = parseImSourceMessage(text);
+  const { text: displayText, attachments } = parseAttachmentRefsForDisplay(imSource?.text ?? text);
   const orderedAttachments = sortDisplayAttachments(attachments);
+  const sourceLabel = imSource ? imSourceLabel(imSource, t) : "";
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({});
   const imagePreviewKey = orderedAttachments
     .filter((attachment) => attachment.kind === "image" && attachment.source === "attachment")
@@ -56,9 +100,31 @@ export function UserMessage({
     };
   }, [imagePreviewKey]);
   return (
-    <div className={`msg msg--user${failed ? " msg--user-failed" : ""}`} id={anchorId} data-question-anchor={anchorId} data-turn={turn}>
+    <div
+      className={`msg msg--user${imSource ? " msg--im-source" : ""}${failed ? " msg--user-failed" : ""}`}
+      id={anchorId}
+      data-question-anchor={anchorId}
+      data-turn={turn}
+      data-im-source={imSource?.provider || undefined}
+    >
       <div className="msg__body">
-        {displayText && <div className="msg__text">{displayText}</div>}
+        {imSource ? (
+          <div className="im-source-card">
+            <div className="im-source-card__head">
+              <MessageSquare size={14} />
+              <span>{t("msg.fromIm", { source: sourceLabel })}</span>
+            </div>
+            {displayText && <div className="im-source-card__text">{displayText}</div>}
+            {(imSource.sender || imSource.chat) && (
+              <div className="im-source-card__meta">
+                {imSource.sender && <span>{t("msg.imSender", { id: imSource.sender })}</span>}
+                {imSource.chat && <span>{imSource.chat}</span>}
+              </div>
+            )}
+          </div>
+        ) : (
+          displayText && <div className="msg__text">{displayText}</div>
+        )}
         {failed && <div className="msg__send-failed">{t("msg.sendFailed")}</div>}
         {orderedAttachments.length > 0 && (
           <div className="msg-attachments" aria-label={t("msg.attachments")}>
@@ -267,34 +333,38 @@ export function TurnActions({
 export const AssistantMessage = memo(function AssistantMessage({
   item,
   defaultExpanded = false,
+  expandWhileStreaming = true,
 }: {
   item: AssistantItem;
   defaultExpanded?: boolean;
+  /** false in compact/minimal: completed steps fold away, so auto-open + fold reads as flicker. */
+  expandWhileStreaming?: boolean;
 }) {
   const t = useT();
+  const [reasoningOpen, setReasoningOpen] = useState((expandWhileStreaming && item.streaming) || defaultExpanded);
   const hasText = item.streaming || item.text.trim() !== "";
   const processOnly = Boolean(item.reasoning) && !hasText;
   const processWithText = Boolean(item.reasoning) && hasText;
-  const [reasoningOpen, setReasoningOpen] = useState(item.streaming || defaultExpanded);
   return (
     <div className={`msg msg--assistant${processOnly ? " msg--process-only" : ""}${processWithText ? " msg--process-with-text" : ""}`}>
       {item.reasoning && (
-        <ProcessCard
-          tone="violet"
-          icon={<ProcessBrainIcon size={12} />}
-          kind="reasoning"
-          name={t("msg.thinking")}
-          meta={
-            <>
-              <ProcessStatusIcon state={item.streaming ? "running" : "done"} label={item.streaming ? t("msg.thinkingRunning") : t("msg.thinkingDone")} />
-              <span>{item.streaming ? t("msg.thinkingRunning") : t("msg.thinkingDone")}</span>
-            </>
-          }
-          open={reasoningOpen}
-          onOpenChange={setReasoningOpen}
-        >
-          <div className="reasoning__body">{item.reasoning}</div>
-        </ProcessCard>
+        <div className="reasoning">
+          <button
+            type="button"
+            className="reasoning__head"
+            data-running={item.streaming ? "" : undefined}
+            onClick={() => setReasoningOpen((v) => !v)}
+            aria-expanded={reasoningOpen}
+          >
+            <ProcessBrainIcon size={12} />
+            <span>{t("msg.thinking")}</span>
+            <span className="reasoning__meta">{item.streaming ? t("msg.thinkingRunning") : t("msg.thinkingDone")}</span>
+            <ChevronRight className={`reasoning__chevron${reasoningOpen ? " reasoning__chevron--open" : ""}`} size={12} />
+          </button>
+          {reasoningOpen && (
+            <div className="reasoning__body">{item.reasoning}</div>
+          )}
+        </div>
       )}
       {hasText && (
         <div className="msg__body">

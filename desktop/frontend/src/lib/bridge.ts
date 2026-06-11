@@ -217,9 +217,11 @@ export interface AppBindings {
   DiagnoseBotConnection(id: string): Promise<BotConnectionDiagnostic>;
   TestBotConnection(id: string, target?: string): Promise<BotConnectionDiagnostic>;
   SetCloseBehavior(mode: string): Promise<void>;
+  SetDisplayMode(mode: string): Promise<void>;
   SetDesktopLanguage(lang: string): Promise<void>;
   SetDesktopAppearance(theme: string, style: string): Promise<void>;
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
+  SetDesktopTelemetry(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string): Promise<void>;
@@ -234,6 +236,9 @@ export interface AppBindings {
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<void>;
+  // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
+  // version/os/arch, POSTs to the collection endpoint. Only ever sent on user click.
+  ReportCrash(kind: string, detail: string): Promise<void>;
   ListTabs(): Promise<TabMeta[]>;
   OpenProjectTab(workspaceRoot: string, topicID: string): Promise<TabMeta>;
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
@@ -668,7 +673,7 @@ function makeMockApp(): AppBindings {
     },
     agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent." },
     bot: {
-      enabled: false,
+      enabled: !freshMock,
       model: "",
       maxSteps: 25,
       debounceMs: 1500,
@@ -701,13 +706,74 @@ function makeMockApp(): AppBindings {
         tokenSet: false,
         apiBase: "https://ilinkai.weixin.qq.com",
       },
-      connections: [],
+      connections: freshMock ? [] : [
+        {
+          id: "mock-lark-kun",
+          provider: "feishu",
+          domain: "lark",
+          label: "kun",
+          enabled: true,
+          status: "connected",
+          model: "",
+          workspaceRoot: "",
+          credential: {
+            appId: "cli_mock_lark",
+            appSecretEnv: "FEISHU_BOT_APP_SECRET",
+            accountId: "",
+            tokenEnv: "",
+            secretSet: true,
+          },
+          sessionMappings: [
+            {
+              remoteId: "ou_3a2bdd60640aaa95518186677b1f6d8c",
+              sessionId: "topic:topic_product",
+              scope: "global",
+              workspaceRoot: "",
+              updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+            },
+          ],
+          lastError: "",
+          createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+          updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+        },
+        {
+          id: "mock-weixin-kun",
+          provider: "weixin",
+          domain: "weixin",
+          label: "kun",
+          enabled: true,
+          status: "connected",
+          model: "",
+          workspaceRoot: "",
+          credential: {
+            appId: "",
+            appSecretEnv: "",
+            accountId: "default",
+            tokenEnv: "WEIXIN_BOT_TOKEN",
+            secretSet: true,
+          },
+          sessionMappings: [
+            {
+              remoteId: "wxid_kun_auto",
+              sessionId: "topic:topic_ai",
+              scope: "global",
+              workspaceRoot: "",
+              updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+            },
+          ],
+          lastError: "",
+          createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+          updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+        },
+      ],
     },
     desktopLanguage: "",
     desktopTheme: "light",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
+    displayMode: "minimal",
     checkUpdates: true,
+    telemetry: true,
     expandThinking: false,
     configPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai"],
@@ -801,6 +867,63 @@ function makeMockApp(): AppBindings {
   const mockTopicRunsInScenario = (topicId: string) => runningMock && mockTopicIsRunning(topicId);
   const mockTopicHistory = (topicId: string): HistoryMessage[] => {
     switch (topicId) {
+      case "topic_product":
+        return [
+          {
+            role: "user",
+            content: [
+              "[[reasonix-im]]",
+              "provider=lark",
+              "label=Feishu / Lark",
+              "sender=ou_3a2bdd60640aaa95518186677b1f6d8c",
+              "chat=p2p 会话",
+              "[[/reasonix-im]]",
+              "你可以做什么",
+            ].join("\n"),
+          },
+          {
+            role: "assistant",
+            content: "这是 Global 范围下的 IM 会话。我可以先处理不依赖项目文件的问答、计划和信息整理；需要进入项目时，再由桌面端显式绑定或迁移到项目话题。",
+          },
+        ];
+      case "topic_ai":
+        return [
+          {
+            role: "user",
+            content: [
+              "[[reasonix-im]]",
+              "provider=weixin",
+              "label=微信",
+              "sender=wxid_kun_auto",
+              "chat=单聊",
+              "[[/reasonix-im]]",
+              "帮我整理一下今天要做的事",
+            ].join("\n"),
+          },
+          {
+            role: "assistant",
+            content: "可以。我会先在 Global 范围里整理任务清单；如果某条任务需要读取项目文件，再切到你授权的项目话题处理。",
+          },
+        ];
+      case "topic_dev_standard":
+        return [
+          {
+            role: "user",
+            content: [
+              "[[reasonix-im]]",
+              "provider=lark",
+              "label=Feishu / Lark",
+              "sender=ou_3a2bdd60640aaa95518186677b1f6d8c",
+              "chat=p2p 会话",
+              "[[/reasonix-im]]",
+              "你可以做什么",
+            ].join("\n"),
+          },
+          {
+            role: "assistant",
+            content: "我可以在桌面端帮你处理代码编写、文件操作、项目分析和问题定位。来自 IM 的请求会进入同一条聊天时间线，桌面端继续承载模型调用、工具执行和上下文管理。",
+          },
+        ];
       case "topic_p3b_pd":
         return [
           { role: "user", content: "把 p3b P&D 的范围和风险重新整理成可执行计划。" },
@@ -2019,12 +2142,24 @@ function makeMockApp(): AppBindings {
           if (settings.bot.qq.appSecretEnv === name) settings.bot.qq.secretSet = true;
           if (settings.bot.feishu.appSecretEnv === name) settings.bot.feishu.secretSet = true;
           if (settings.bot.weixin.tokenEnv === name) settings.bot.weixin.tokenSet = true;
+          settings.bot.connections = settings.bot.connections.map((connection) => ({
+            ...connection,
+            credential: connection.credential.appSecretEnv === name || connection.credential.tokenEnv === name
+              ? { ...connection.credential, secretSet: true }
+              : connection.credential,
+          }));
         },
         async ClearBotSecret(envName: string) {
           const name = envName.trim();
           if (settings.bot.qq.appSecretEnv === name) settings.bot.qq.secretSet = false;
           if (settings.bot.feishu.appSecretEnv === name) settings.bot.feishu.secretSet = false;
           if (settings.bot.weixin.tokenEnv === name) settings.bot.weixin.tokenSet = false;
+          settings.bot.connections = settings.bot.connections.map((connection) => ({
+            ...connection,
+            credential: connection.credential.appSecretEnv === name || connection.credential.tokenEnv === name
+              ? { ...connection.credential, secretSet: false }
+              : connection.credential,
+          }));
         },
         async StartBotConnectionInstall(provider: string, domain: string) {
           const normalizedProvider = provider === "weixin" ? "weixin" : "feishu";
@@ -2053,6 +2188,8 @@ function makeMockApp(): AppBindings {
             label: domain === "lark" ? "Lark" : domain === "weixin" ? "微信" : "飞书",
             enabled: true,
             status: "connected",
+            model: "",
+            workspaceRoot: "",
             credential: {
               appId: provider === "feishu" ? "cli_mock" : "",
               appSecretEnv: provider === "feishu" ? (domain === "lark" ? "LARK_BOT_APP_SECRET" : "FEISHU_BOT_APP_SECRET") : "",
@@ -2082,6 +2219,9 @@ function makeMockApp(): AppBindings {
         async SetCloseBehavior(mode: string) {
           settings.closeBehavior = mode === "quit" ? "quit" : "background";
         },
+        async SetDisplayMode(mode: string) {
+          settings.displayMode = mode;
+        },
         async SetDesktopLanguage(lang: string) {
           settings.desktopLanguage = lang === "en" || lang === "zh" ? lang : "";
         },
@@ -2091,6 +2231,9 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopCheckUpdates(enabled: boolean) {
           settings.checkUpdates = enabled;
+        },
+        async SetDesktopTelemetry(enabled: boolean) {
+          settings.telemetry = enabled;
         },
         async SetExpandThinking(on: boolean) {
           settings.expandThinking = on;
@@ -2156,6 +2299,9 @@ function makeMockApp(): AppBindings {
       settings.providers.forEach((p) => {
         if (p.apiKeyEnv === "DEEPSEEK_API_KEY") p.keySet = true;
       });
+      await delay(300);
+    },
+    async ReportCrash() {
       await delay(300);
     },
     // Tab management mocks.

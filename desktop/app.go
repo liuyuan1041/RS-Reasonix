@@ -287,6 +287,7 @@ func (a *App) startup(ctx context.Context) {
 	}()
 
 	go a.restoreOrBuildTabs()
+	go a.sendStartupPing()
 }
 
 // embedsDataDir returns the directory where embedded assets (Python MCP server,

@@ -451,7 +451,7 @@ const planApprovalTool = "exit_plan_mode"
 
 // planApprovedMessage is the follow-up turn sent once the user approves a plan —
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
-const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write; 2) execute it; 3) call complete_step with evidence; 4) call todo_write to mark it completed and set the next sub-step in_progress; 5) repeat until done. Never batch-complete multiple sub-steps at once — each sub-step must have its own complete_step before it is marked completed in todo_write."
+const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write (this establishes the task list); 2) execute the sub-step; 3) call complete_step with evidence — the host then marks that sub-step completed and moves the next one to in_progress for you. Repeat 2–3 for each remaining sub-step. You don’t need another todo_write to mark steps completed; each complete_step advances the list. Sign off one sub-step at a time — never batch multiple completions."
 
 // runTurn runs one model turn, then applies the plan-approval gate. This is the
 // single, frontend-agnostic plan flow: in plan mode the model just researches
@@ -1766,6 +1766,45 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.sessionPath = path
 	c.mu.Unlock()
 	c.rebindCheckpoints(path)
+	c.maybeColdResumePrune(path)
+}
+
+// cacheColdAfter approximates how long the provider keeps a prompt prefix
+// cached. A session idle longer than this resumes against a cold cache, so a
+// history rewrite at that moment costs no extra cache misses — it only shrinks
+// the full-price first request. Deliberately conservative: too small burns a
+// live cache (~4× the miss tokens, measured), too large only forgoes a prune.
+// Tighten from benchmarks/cache-ttl-probe data, never below measured retention.
+var cacheColdAfter = 24 * time.Hour
+
+// maybeColdResumePrune elides stale tool results when a resumed session has
+// been idle past the provider's cache retention, then persists the pruned
+// transcript so the saved file and the prompt stay in sync.
+func (c *Controller) maybeColdResumePrune(path string) {
+	if c.executor == nil || path == "" {
+		return
+	}
+	// Idle time comes from branch meta only — every session the controller has
+	// ever snapshotted carries one. A meta-less transcript (e.g. a legacy import
+	// not yet saved) skips the prune until its first snapshot creates the meta.
+	m, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok || m.UpdatedAt.IsZero() {
+		return
+	}
+	last := m.UpdatedAt
+	if time.Since(last) < cacheColdAfter {
+		return
+	}
+	st, err := c.executor.PruneStaleToolResults()
+	if err != nil || st.Results == 0 {
+		return
+	}
+	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+		"resumed after %s idle (provider cache expired) — elided %d stale tool results to cheapen the cold restart",
+		time.Since(last).Round(time.Minute), st.Results)})
+	if err := c.Snapshot(); err != nil {
+		slog.Warn("controller: post-prune snapshot", "err", err)
+	}
 }
 
 // Snapshot writes the executor's conversation to the active session file. No-op

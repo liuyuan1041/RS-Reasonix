@@ -651,6 +651,8 @@ export interface BotConnectionCredentialView {
 export interface BotConnectionSessionMappingView {
   remoteId: string;
   sessionId: string;
+  scope: "global" | "project" | string;
+  workspaceRoot: string;
   updatedAt: string;
 }
 
@@ -661,6 +663,8 @@ export interface BotConnectionView {
   label: string;
   enabled: boolean;
   status: "disconnected" | "pending" | "connected" | "error" | string;
+  model: string;
+  workspaceRoot: string;
   credential: BotConnectionCredentialView;
   sessionMappings: BotConnectionSessionMappingView[];
   lastError: string;
@@ -726,7 +730,9 @@ export interface SettingsView {
   desktopTheme: string; // "auto" | "dark" | "light"
   desktopThemeStyle: string;
   closeBehavior: string; // "background" | "quit"
+  displayMode: string;   // "standard" | "compact" | "minimal"
   checkUpdates: boolean; // check for new versions on startup
+  telemetry: boolean; // anonymous launch ping (install id + version + OS)
   expandThinking: boolean; // show reasoning text expanded by default
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)

@@ -91,6 +91,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		fmt.Fprintf(&b, "close_behavior = %q   # desktop: quit|background when the window close button is clicked\n", c.DesktopCloseBehavior())
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
+		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping (install id + version + OS); never content\n", c.DesktopTelemetry())
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
@@ -399,6 +400,12 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "label = %q\n", conn.Label)
 			fmt.Fprintf(&b, "enabled = %v\n", conn.Enabled)
 			fmt.Fprintf(&b, "status = %q\n", conn.Status)
+			if conn.Model != "" {
+				fmt.Fprintf(&b, "model = %q\n", conn.Model)
+			}
+			if conn.WorkspaceRoot != "" {
+				fmt.Fprintf(&b, "workspace_root = %q\n", conn.WorkspaceRoot)
+			}
 			if conn.LastError != "" {
 				fmt.Fprintf(&b, "last_error = %q\n", conn.LastError)
 			}
@@ -628,6 +635,12 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 		parts := map[string]string{
 			"remote_id":  mapping.RemoteID,
 			"session_id": mapping.SessionID,
+		}
+		if mapping.Scope != "" {
+			parts["scope"] = mapping.Scope
+		}
+		if mapping.WorkspaceRoot != "" {
+			parts["workspace_root"] = mapping.WorkspaceRoot
 		}
 		if mapping.UpdatedAt != "" {
 			parts["updated_at"] = mapping.UpdatedAt
