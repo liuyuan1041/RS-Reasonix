@@ -92,6 +92,7 @@ export function AppChrome({
           <span />
         </div>
       )}
+      {darwinChrome && <span className="app-chrome__drag-rail" aria-hidden="true" />}
       <button
         className={[
           "app-chrome__panel-toggle",
