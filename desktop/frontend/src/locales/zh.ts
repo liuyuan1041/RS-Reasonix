@@ -277,15 +277,15 @@ export const zh: Record<DictKey, string> = {
   "caps.hideDiagnostics": "隐藏诊断路径",
 
   // 欢迎 / 空状态
-  "welcome.title": "一个编码智能体",
-  "welcome.tagline": "描述任务，或随便问点什么。",
+  "welcome.title": "欢迎使用 RS-Reasonix",
+  "welcome.tagline": "为长会话、低成本而生的遥感 AI 智能体。首次使用？输入 /set 开始配置。",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用文件",
   "welcome.hintSend": "发送",
-  "welcome.ex1": "讲讲这个代码库的架构",
-  "welcome.ex2": "总结最近的 git 改动",
-  "welcome.ex3": "智能体的运行主循环在哪，它做了什么？",
-  "welcome.ex4": "找出并修复这个项目里的一个 bug",
+  "welcome.ex1": "帮我看看这个 tif 文件的元数据",
+  "welcome.ex2": "把文件夹里的 shp 全转成 GeoJSON",
+  "welcome.ex3": "分析太湖 2023 年 Sentinel-2 的 NDVI",
+  "welcome.ex4": "帮我找北京 2024 年的 Landsat 8 数据",
 
   // 输入框
   "composer.placeholder": "给 RS-Reasonix 发消息…  ( / 命令 · @ 文件 · ! 终端 )",
