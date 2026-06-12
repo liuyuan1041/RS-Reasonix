@@ -96,6 +96,13 @@ Use `bash` to find the exact path: `echo $APPDATA` (Windows) or `echo $HOME/.con
 
 Add or update the following sections:
 
+### Welcome
+RS-Reasonix is a remote-sensing AI coding agent. You have access to:
+- **Geo Tools**: GDAL · QGIS Processing (422 algorithms) · Google Earth Engine
+- **Skills**: Type / in chat to see all available skills, including:
+  `/rsdata` remote sensing data search, `/gee-scripting` GEE scripting, `/projection-selection` coordinate system selection, `/nature-figure` paper figures, `/nature-writing` academic writing, `/multi-search-engine` web search, `/patent-architect` patent drafting
+- **Quick start**: "Show metadata for my raster file" · "Convert all shapefiles to GeoJSON" · "Calculate NDVI from Sentinel-2" · "Create a publication-quality map"
+
 ### Geo Environment
 Status table (GDAL/QGIS/GEE — status, version, path) from the probe.
 
