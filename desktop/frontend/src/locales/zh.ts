@@ -578,7 +578,7 @@ export const zh: Record<DictKey, string> = {
   "memory.clearFilters": "清空筛选",
   "memory.noFacts": "还没有保存任何内容。智能体会通过 remember 工具写入这些。",
   "memory.emptySavedTitle": "还没有保存的记忆",
-  "memory.emptySavedBody": "只保存对后续 Reasonix 会话有帮助的长期背景。",
+  "memory.emptySavedBody": "只保存对后续 RS-Reasonix 会话有帮助的长期背景。",
   "memory.suggestions": "候选建议",
   "memory.suggestionsHint": "从近期本地历史中提取候选；确认前不会写入记忆或 Skill。",
   "memory.scanSuggestions": "手动扫描历史",
