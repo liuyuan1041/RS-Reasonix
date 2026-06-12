@@ -44,7 +44,7 @@ func CacheDir() string {
 				return ""
 			}
 		}
-		base = filepath.Join(base, "reasonix")
+		base = filepath.Join(base, "rs-reasonix")
 	}
 	return filepath.Join(base, "codegraph", Version)
 }

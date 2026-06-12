@@ -1572,12 +1572,18 @@ func retargetDesktopOfficialRef(ref string, access map[string]bool) string {
 	}
 }
 
+// AppDir is the application data directory name (used for config, sessions,
+// credentials, etc.). Changed from upstream "reasonix" to "rs-reasonix" for
+// the rebranded fork. Migration from the old directory is handled by
+// migrateLegacyAppDir.
+const AppDir = "rs-reasonix"
+
 func userConfigPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "config.toml")
+	return filepath.Join(dir, AppDir, "config.toml")
 }
 
 // UserConfigPath is the user-global config file (~/.config/reasonix/config.toml),
@@ -1596,7 +1602,7 @@ func UserCredentialsPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "credentials")
+	return filepath.Join(dir, AppDir, "credentials")
 }
 
 // ArchiveDir is where compacted conversation history is archived for
@@ -1607,7 +1613,7 @@ func ArchiveDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "archive")
+	return filepath.Join(dir, AppDir, "archive")
 }
 
 // SessionDir is where chat sessions are persisted (one .jsonl per session).
@@ -1618,7 +1624,7 @@ func SessionDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "sessions")
+	return filepath.Join(dir, AppDir, "sessions")
 }
 
 // ProjectSessionDir is the per-workspace session directory the desktop sidebar
@@ -1652,7 +1658,7 @@ func CacheDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix", "cache")
+	return filepath.Join(dir, AppDir, "cache")
 }
 
 // MemoryUserDir returns the reasonix user config root (…/reasonix), under which
@@ -1663,7 +1669,7 @@ func MemoryUserDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix")
+	return filepath.Join(dir, AppDir)
 }
 
 // ConventionDirs are the parent directories scanned for agent assets (skills,
@@ -1707,7 +1713,7 @@ func CommandDirsForRoot(root string) []string {
 		dirs = append(dirs, conventionSubdirsAsc(home, "commands")...)
 	}
 	if dir, err := os.UserConfigDir(); err == nil {
-		dirs = append(dirs, filepath.Join(dir, "reasonix", "commands")) // legacy XDG user dir
+		dirs = append(dirs, filepath.Join(dir, AppDir, "commands")) // legacy XDG user dir
 	}
 	dirs = append(dirs, conventionSubdirsAsc(root, "commands")...)
 	return dirs

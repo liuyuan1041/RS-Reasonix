@@ -1283,7 +1283,7 @@ func desktopConfigDir() string {
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, ".reasonix")
 	}
-	return filepath.Join(dir, "reasonix")
+	return filepath.Join(dir, config.AppDir)
 }
 
 func (a *App) saveTabsLocked() {
@@ -3102,7 +3102,7 @@ func globalWorkspaceRoot() string {
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, ".reasonix", "global-workspace")
 	}
-	return filepath.Join(dir, "reasonix", "global-workspace")
+	return filepath.Join(dir, config.AppDir, "global-workspace")
 }
 
 func ensureGlobalWorkspaceRoot() (string, error) {

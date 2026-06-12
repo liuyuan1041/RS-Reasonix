@@ -78,6 +78,8 @@ type App struct {
 
 	mediaTokens *mediaTokenStore
 	botInstalls map[string]*botInstallSession
+
+	metrics atomic.Pointer[metricsAggregator]
 }
 
 // mediaTokenEntry holds metadata for a workspace media file served via temporary URL.
@@ -270,6 +272,10 @@ func (a *App) startup(ctx context.Context) {
 	installSystemQuitHook()
 	a.startTray()
 
+	if cfg, err := config.Load(); err == nil && cfg.DesktopMetrics() && version != "dev" {
+		a.metrics.Store(newMetricsAggregator(filepath.Dir(config.UserConfigPath())))
+	}
+
 	// Extract bundled Python MCP server sources so the geocode plugin can find
 	// internal.geo.mcp_server without a separate install step.
 	go func() {
@@ -288,6 +294,7 @@ func (a *App) startup(ctx context.Context) {
 
 	go a.restoreOrBuildTabs()
 	go a.sendStartupPing()
+	go a.flushMetrics()
 }
 
 // embedsDataDir returns the directory where embedded assets (Python MCP server,
