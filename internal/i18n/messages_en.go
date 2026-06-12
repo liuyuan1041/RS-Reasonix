@@ -35,8 +35,12 @@ var English = Messages{
 	ResumeBadIndexFmt:   "pick a session 1–%d (run /resume to list)",
 	ResumeAlreadyActive: "already in that session",
 	ResumedTitle:        "resumed session",
-	ResumePickTitle:     "Resume a saved session",
-	ResumePickHint:      "↑/↓ move · Enter resume · Esc cancel",
+
+	RenameUsage:     "usage: /rename <new title>  or  /rename <n> <new title>",
+	RenameNoSession: "no active session to rename",
+	RenameDoneFmt:   "session renamed to %q",
+	ResumePickTitle: "Resume a saved session",
+	ResumePickHint:  "↑/↓ move · Enter resume · Esc cancel",
 
 	ChatThinking:                "thinking…",
 	ChatThoughtForFmt:           "thought for %ds",
@@ -164,6 +168,7 @@ var English = Messages{
 	CmdBranch:       "create a conversation branch",
 	CmdSwitchBranch: "switch conversation branch",
 	CmdResume:       "resume a saved session",
+	CmdRename:       "rename a session",
 	CmdModel:        "switch model",
 	CmdMemory:       "show memory files",
 	CmdGoal:         "set or clear the active goal",

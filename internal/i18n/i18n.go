@@ -60,8 +60,12 @@ type Messages struct {
 	ResumeBadIndexFmt   string // shown when /resume gets an out-of-range index (one %d)
 	ResumeAlreadyActive string // shown when /resume targets the current session
 	ResumedTitle        string // banner title after a /resume switch
-	ResumePickTitle     string // header in the interactive resume picker
-	ResumePickHint      string // keyboard hint in the interactive resume picker
+
+	RenameUsage     string // /rename with no args
+	RenameNoSession string // /rename with no active session
+	RenameDoneFmt   string // /rename succeeded (one %s = new title)
+	ResumePickTitle string // header in the interactive resume picker
+	ResumePickHint  string // keyboard hint in the interactive resume picker
 
 	// chat TUI status line / approval banner.
 	ChatThinking                string // live reasoning marker label, e.g. "thinking…"
@@ -153,6 +157,7 @@ type Messages struct {
 	CmdBranch       string // /branch
 	CmdSwitchBranch string // /switch
 	CmdResume       string // /resume
+	CmdRename       string // /rename
 	CmdModel        string // /model
 	CmdMemory       string // /memory
 	CmdGoal         string // /goal
