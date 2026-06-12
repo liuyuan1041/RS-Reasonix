@@ -26,6 +26,8 @@ import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
 import { MCPServersSettingsPage, SkillsSettingsPage } from "./CapabilitiesPanel";
 import { MemorySettingsPage } from "./MemoryPanel";
+import { SoundSelect } from "./SoundSelect";
+import { getSuccessPreference, setSuccessPreference, getAttentionPreference, setAttentionPreference, playSuccessChime, playAttentionChime, type SoundWavPref } from "../lib/sound";
 import { ModalCloseButton } from "./ModalCloseButton";
 
 const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "permissions", "sandbox", "network", "appearance", "updates"];
@@ -542,7 +544,7 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
 function normalizeSettingsView(view: SettingsView | null | undefined): SettingsView | null {
   if (!view) return null;
   const permissions = view.permissions ?? { mode: "ask", allow: [], ask: [], deny: [] };
-  const sandbox = view.sandbox ?? { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [] };
+  const sandbox = view.sandbox ?? { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" };
   const network = view.network ?? {
     proxyMode: "auto",
     proxyUrl: "",
@@ -643,6 +645,8 @@ function GeneralSection({ s, busy, apply }: SectionProps) {
   useEffect(() => onDisplayModeChange((mode) => setDisplayMode(mode)), []);
   const autoPlan = normalizeAutoPlan(s.autoPlan);
   const languagePref = normalizeLangPref(s.desktopLanguage);
+  const [soundPref, setSoundPref] = useState<SoundWavPref>(getSuccessPreference());
+  const [attentionPref, setAttentionPref] = useState<SoundWavPref>(getAttentionPreference());
   const setLanguage = (next: LangPref) => {
     setPref(next);
     void apply(() => app.SetDesktopLanguage(next));
@@ -720,6 +724,34 @@ function GeneralSection({ s, busy, apply }: SectionProps) {
               {t(`settings.autoPlan.${mode}`)}
             </button>
           ))}
+        </div>
+      </SettingsField>
+      <SettingsField label={t("settings.notificationSound")} hint={t("settings.notificationSoundHint")} stacked>
+        <div className="settings-notification-sound-row">
+          <span>{t("settings.notificationSoundSuccess")}</span>
+          <SoundSelect
+            value={soundPref}
+            onChange={(next) => {
+              setSoundPref(next);
+              setSuccessPreference(next);
+              playSuccessChime();
+            }}
+            onPreview={playSuccessChime}
+            previewDisabled={soundPref === "off"}
+          />
+        </div>
+        <div className="settings-notification-sound-row" style={{ marginTop: 6 }}>
+          <span>{t("settings.notificationSoundAttention")}</span>
+          <SoundSelect
+            value={attentionPref}
+            onChange={(next) => {
+              setAttentionPref(next);
+              setAttentionPreference(next);
+              playAttentionChime();
+            }}
+            onPreview={playAttentionChime}
+            previewDisabled={attentionPref === "off"}
+          />
         </div>
       </SettingsField>
     </SettingsSection>
@@ -3519,10 +3551,18 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
   const sb = s.sandbox;
   const [root, setRoot] = useState(sb.workspaceRoot);
   const set = (next: Partial<typeof sb>) =>
-    apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite));
+    apply(() => app.SetSandbox(next.bash ?? sb.bash, next.network ?? sb.network, next.workspaceRoot ?? sb.workspaceRoot, next.allowWrite ?? sb.allowWrite, next.shell ?? sb.shell));
 
   return (
     <SettingsSection title={t("settings.sandboxTitle")}>
+      <SettingsField label={t("settings.shellInterpreter")}>
+        <select className="mem-select set-grow" value={sb.shell || "auto"} disabled={busy} onChange={(e) => void set({ shell: e.target.value })}>
+          <option value="auto">{t("settings.shellAuto")}</option>
+          <option value="bash">{t("settings.shellBash")}</option>
+          <option value="powershell">{t("settings.shellPowershell")}</option>
+          <option value="pwsh">{t("settings.shellPwsh")}</option>
+        </select>
+      </SettingsField>
       <SettingsField label={t("settings.bashSandbox")}>
         <select className="mem-select set-grow" value={sb.bash} disabled={busy} onChange={(e) => void set({ bash: e.target.value })}>
           <option value="enforce">{t("settings.bashEnforce")}</option>
