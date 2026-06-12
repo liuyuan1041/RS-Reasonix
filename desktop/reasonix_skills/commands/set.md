@@ -96,24 +96,6 @@ Use `bash` to find the exact path: `echo $APPDATA` (Windows) or `echo $HOME/.con
 
 Add or update the following sections:
 
-### Welcome
-
-欢迎使用 RS-Reasonix 遥感智能体。
-
-**为长会话、低成本而生的遥感 AI Agent。** 基于 DeepSeek 缓存优化，会话越长越便宜。
-内置 GDAL / QGIS Processing / Google Earth Engine 三大遥感引擎，38 个预装 Skills，
-从数据检索到论文投稿，一个 Agent 搞定全流程。
-
-首次使用？输入 `/set` 开始环境配置（1 分钟）。
-已有环境？直接描述你的任务，例如：
-- "帮我看看这个 tif 文件的元数据"
-- "把文件夹里的 shp 全转成 GeoJSON"
-- "分析太湖 2023 年 Sentinel-2 的 NDVI"
-
-可用工具：GDAL · QGIS Processing（422 种算法）· Google Earth Engine
-预装 Skills：/rsdata 遥感数据搜索 · /projection-selection 投影选择 · /nature-figure 论文配图 · /nature-writing 学术写作 · /gee-scripting GEE 脚本 · /multi-search-engine 搜索 · /patent-architect 专利申报
-更多 skill：输入 / 浏览全部 38 个预装技能
-
 ### Geo Environment
 Status table (GDAL/QGIS/GEE — status, version, path) from the probe.
 
