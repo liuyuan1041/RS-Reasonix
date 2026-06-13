@@ -1,8 +1,24 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { execSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import path from "path";
 
 const devPort = Number(process.env.REASONIX_DESKTOP_VITE_PORT || "5173");
+const configDir = dirname(fileURLToPath(import.meta.url));
+
+// Stamps the build commit into the bundle so a minified crash stack can be mapped
+// back to the sourcemap of the exact build.
+function buildCommit(): string {
+  if (process.env.REASONIX_COMMIT) return process.env.REASONIX_COMMIT;
+  try {
+    return execSync("git rev-parse --short HEAD", { cwd: configDir }).toString().trim();
+  } catch {
+    return "dev";
+  }
+}
 
 // When running Vite standalone (`pnpm dev`, no Wails shell), the Wails-generated
 // modules under ../../wailsjs/ don't exist. Map them to browser-dev mocks so the
@@ -31,10 +47,25 @@ function stripCrossorigin(): Plugin {
   };
 }
 
+// Vite must empty dist before production builds so stale hashed assets disappear.
+// Recreate the tracked placeholder afterwards so Go's //go:embed still works.
+function keepDistPlaceholder(): Plugin {
+  return {
+    name: "keep-dist-placeholder",
+    apply: "build",
+    closeBundle: async () => {
+      const dir = resolve(configDir, "dist");
+      await mkdir(dir, { recursive: true });
+      await writeFile(resolve(dir, ".gitkeep"), "", "utf-8");
+    },
+  };
+}
+
 // base: "./" so built asset URLs are relative. Wails serves the embedded dist from
 // the app root over the wails:// scheme, where absolute "/assets/..." URLs 404.
 export default defineConfig({
-  plugins: [react(), wailsMocks(), stripCrossorigin()],
+  plugins: [react(), wailsMocks(), stripCrossorigin(), keepDistPlaceholder()],
+  define: { __REASONIX_COMMIT__: JSON.stringify(buildCommit()) },
   base: "./",
   build: {
     outDir: "dist",
