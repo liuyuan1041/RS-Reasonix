@@ -4,7 +4,6 @@ import { execSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import path from "path";
 
 const devPort = Number(process.env.REASONIX_DESKTOP_VITE_PORT || "5173");
 const configDir = dirname(fileURLToPath(import.meta.url));
@@ -18,22 +17,6 @@ function buildCommit(): string {
   } catch {
     return "dev";
   }
-}
-
-// When running Vite standalone (`pnpm dev`, no Wails shell), the Wails-generated
-// modules under ../../wailsjs/ don't exist. Map them to browser-dev mocks so the
-// UI can be developed without rebuilding the Go side.
-function wailsMocks(): Plugin {
-  const MOCKS = path.resolve("src/__mocks__");
-  return {
-    name: "wails-mocks",
-    enforce: "pre",
-    resolveId(id) {
-      if (id.includes("wailsjs/runtime/runtime")) return path.join(MOCKS, "wailsjs/runtime/runtime.ts");
-      if (id.includes("wailsjs/go/main/App")) return path.join(MOCKS, "wailsjs/go/main/App.ts");
-      return null;
-    },
-  };
 }
 
 // On macOS ≤ 12 (Safari 15 WebKit) a crossorigin module/stylesheet fetched over the
@@ -64,7 +47,7 @@ function keepDistPlaceholder(): Plugin {
 // base: "./" so built asset URLs are relative. Wails serves the embedded dist from
 // the app root over the wails:// scheme, where absolute "/assets/..." URLs 404.
 export default defineConfig({
-  plugins: [react(), wailsMocks(), stripCrossorigin(), keepDistPlaceholder()],
+  plugins: [react(), stripCrossorigin(), keepDistPlaceholder()],
   define: { __REASONIX_COMMIT__: JSON.stringify(buildCommit()) },
   base: "./",
   build: {
