@@ -46,7 +46,7 @@ export const zh: Record<DictKey, string> = {
   "sidebar.memorySkills": "记忆与技能",
   "sidebar.workspace": "工作区",
   "sidebar.changeWorkspace": "更改",
-  "sidebar.navigation": "RS-RS-Reasonix 导航",
+  "sidebar.navigation": "RS-Reasonix 导航",
   "sidebar.collapse": "收起导航",
   "sidebar.expand": "展开导航",
   "sidebar.expandBlocked": "关闭工作区面板后可展开导航",
@@ -294,7 +294,7 @@ export const zh: Record<DictKey, string> = {
   "caps.hideDiagnostics": "隐藏诊断路径",
 
   // 欢迎 / 空状态
-  "welcome.title": "欢迎使用 RS-RS-Reasonix",
+  "welcome.title": "欢迎使用 RS-Reasonix",
   "welcome.tagline": "为长会话、低成本而生的遥感 AI 智能体。首次使用？输入 /set 开始配置。",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用文件",
@@ -305,7 +305,7 @@ export const zh: Record<DictKey, string> = {
   "welcome.ex4": "帮我找北京 2024 年的 Landsat 8 数据",
 
   // 输入框
-  "composer.placeholder": "给 RS-RS-Reasonix 发消息…  ( / 命令 · @ 文件 · ! 终端 )",
+  "composer.placeholder": "给 RS-Reasonix 发消息…  ( / 命令 · @ 文件 · ! 终端 )",
   "composer.normalMode": "对话模式",
   "composer.normalModeDesc": "直接对话或执行任务。",
   "composer.planMode": "计划模式",
@@ -692,7 +692,7 @@ export const zh: Record<DictKey, string> = {
   "settings.updatesMeta": "版本 · 配置",
   "settings.closeBehavior": "关闭窗口时",
   "settings.closeBehavior.background": "保持后台运行",
-  "settings.closeBehavior.quit": "退出 RS-RS-Reasonix",
+  "settings.closeBehavior.quit": "退出 RS-Reasonix",
   "settings.expandThinking": "思考过程显示",
   "settings.expandThinking.expanded": "默认展开",
   "settings.expandThinking.collapsed": "默认折叠",
@@ -883,7 +883,7 @@ export const zh: Record<DictKey, string> = {
   "settings.botSecretReplace": "替换已保存的密钥",
   "settings.botAdvancedSettings": "高级设置",
   "settings.botInstallTitle": "扫码连接",
-  "settings.botInstallSubtitle": "连接完成后即可在聊天里调用 RS-RS-Reasonix。",
+  "settings.botInstallSubtitle": "连接完成后即可在聊天里调用 RS-Reasonix。",
   "settings.botInstallPick": "选择渠道",
   "settings.botInstallStarting": "正在生成二维码…",
   "settings.botInstallScanHint": "请扫码完成授权，连接会自动保存。",
@@ -1047,7 +1047,7 @@ export const zh: Record<DictKey, string> = {
   "settings.pageDesc.bots": "配置飞书、Lark 和微信机器人渠道，管理每个 Bot 的模型和运行参数。",
   "settings.pageDesc.mcp": "管理 MCP 服务器连接和工具发现。",
   "settings.pageDesc.skills": "浏览、启用和管理智能体技能与来源。",
-  "settings.pageDesc.memory": "管理 RS-RS-Reasonix 会长期参考的偏好、项目约定和指令文件。",
+  "settings.pageDesc.memory": "管理 RS-Reasonix 会长期参考的偏好、项目约定和指令文件。",
   "settings.pageDesc.hooks": "配置围绕对话、工具调用、压缩和会话生命周期执行的 shell hooks。",
   "settings.pageDesc.network": "代理与网络配置。",
   "settings.pageDesc.permissions": "写操作模式与细粒度工具权限规则。",
@@ -1077,7 +1077,7 @@ export const zh: Record<DictKey, string> = {
   "settings.addProvider.chooseTitle": "添加供应商",
   "settings.addProvider.chooseHint": "选择官方预设，或添加一个自定义 OpenAI-compatible 接入。",
   "settings.addProvider.officialChoice": "官方供应商",
-  "settings.addProvider.officialChoiceHint": "从 RS-RS-Reasonix 预设的 DeepSeek 与 Mimo 接入中选择。",
+  "settings.addProvider.officialChoiceHint": "从 RS-Reasonix 预设的 DeepSeek 与 Mimo 接入中选择。",
   "settings.addProvider.customChoice": "自定义供应商",
   "settings.addProvider.customChoiceHint": "按 base_url、模型、密钥环境变量等参数手动配置。",
   "settings.addProvider.officialTitle": "添加官方供应商",
@@ -1161,7 +1161,7 @@ export const zh: Record<DictKey, string> = {
   "settings.hooksUntrusted": "未信任",
   "settings.hooksTrustProject": "信任此工作区",
   "settings.hooksProjectRootUnavailable": "没有活动项目工作区",
-  "settings.hooksGlobalHint": "保存为全局配置。新的 RS-RS-Reasonix 会话会在 /new 或重启后加载。",
+  "settings.hooksGlobalHint": "保存为全局配置。新的 RS-Reasonix 会话会在 /new 或重启后加载。",
   "settings.hooksProjectHint": "保存在当前工作区。项目 hooks 需要信任，并在 /new 或重启后加载。",
   "settings.hooksAdd": "添加 hook",
   "settings.hooksEmpty": "此位置还没有配置 hooks。",
@@ -1296,7 +1296,7 @@ export const zh: Record<DictKey, string> = {
   // 软件更新
   "updater.title": "软件更新",
   "updater.autoCheckLabel": "启动时检测新版本",
-  "updater.autoCheckHint": "关闭后，RS-RS-Reasonix 打开时不会自动检查更新；你仍可在此页手动检查。",
+  "updater.autoCheckHint": "关闭后，RS-Reasonix 打开时不会自动检查更新；你仍可在此页手动检查。",
   "settings.telemetryLabel": "匿名启动统计",
   "settings.telemetryHint": "启动时发送随机安装 ID、版本号和操作系统用于统计活跃安装量；若上次运行发生崩溃，则在本次启动补发该崩溃报告。绝不包含对话、密钥或文件内容。",
   "settings.metricsLabel": "共享聚合质量指标",
@@ -1319,7 +1319,7 @@ export const zh: Record<DictKey, string> = {
   "updater.dismiss": "稍后",
 
   // onboarding — first-run API-key overlay
-  "onboarding.title": "连接 RS-RS-Reasonix",
+  "onboarding.title": "连接 RS-Reasonix",
   "onboarding.tagline": "粘贴一个 DeepSeek API key 即可开始。密钥仅存于本应用的本地凭据文件，不会发往任何地方。",
   "onboarding.inputLabel": "API 密钥",
   "onboarding.inputPlaceholder": "sk-…",
@@ -1377,7 +1377,7 @@ export const zh: Record<DictKey, string> = {
   "context.durationMinutesSeconds": "{minutes}分{seconds}秒",
 
   // 崩溃兜底页
-  "crash.title": "RS-RS-Reasonix 遇到错误 —— 可以一键发送报告，或复制后反馈",
+  "crash.title": "RS-Reasonix 遇到错误 —— 可以一键发送报告，或复制后反馈",
   "crash.copy": "复制",
   "crash.send": "发送报告",
   "crash.sending": "发送中…",
@@ -1419,7 +1419,7 @@ export const zh: Record<DictKey, string> = {
   "mock.askQ1Opt2Desc": "放弃本地所有修改，强制与远端同步",
   "mock.askQ1Opt3Label": "另建分支保存改动",
   "mock.askQ1Opt3Desc": "先创建分支把本地改动保存起来，再拉取主分支",
-  "mock.askQ2Header": "RS-RS-Reasonix 构建",
+  "mock.askQ2Header": "RS-Reasonix 构建",
   "mock.askQ2Prompt": "对于 reasonix 二进制缺失的问题，你想怎么做？",
   "mock.askQ2Opt1Label": "先查文档",
   "mock.askQ2Opt1Desc": "查看 README / 构建文档来确定正确的构建命令",
