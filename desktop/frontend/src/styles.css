@@ -2682,6 +2682,9 @@ a[href] {
 .warm-turn__body {
   padding: 4px 0;
 }
+.warm-turn__content {
+  overflow: hidden;
+}
 .warm-turn__body > * {
   max-width: var(--maxw);
   margin-left: auto;
@@ -2718,9 +2721,19 @@ a[href] {
 .readonly-batch {
   margin: 2px auto;
 }
+
+/* expanded padding — parent --open class drives it while GSAP handles height */
+.readonly-batch--open .readonly-batch__body,
+.turn-collapse--open .turn-collapse__body,
+.tool--open .tool__body {
+  padding: 0 11px 10px 12px;
+  margin-top: 6px;
+}
+
+/* shared body border-left for fold containers */
 .readonly-batch__body,
 .turn-collapse__body {
-  margin-top: 6px;
+  overflow: hidden;
   padding-left: 12px;
   border-left: 2px solid var(--border);
 }
@@ -3359,7 +3372,7 @@ a[href] {
 }
 .reasoning__chevron {
   flex: 0 0 auto;
-  transition: transform 0.15s;
+  transition: transform 0.2s;
 }
 .reasoning__chevron--open {
   transform: rotate(90deg);
@@ -3555,16 +3568,15 @@ a[href] {
   background: var(--fg-faint);
 }
 .reasoning__body {
-  margin: 8px 0;
-  padding: 0 11px 10px 30px;
+  overflow: hidden;
   border-left: 2px solid var(--border);
+  padding-left: 12px;
   color: var(--fg-dim);
   font-size: 13px;
   font-style: italic;
   line-height: 1.7;
   white-space: pre-wrap;
 }
-
 /* live bubble while the answer streams — markdown renders in real time */
 .msg__stream {
   display: flex;
@@ -3913,7 +3925,7 @@ a[href] {
 .tool__chevron {
   flex-shrink: 0;
   color: var(--fg-faint);
-  transition: transform 0.15s;
+  transition: transform 0.2s;
 }
 .tool__chevron--open {
   transform: rotate(90deg);
@@ -3988,7 +4000,9 @@ a[href] {
   flex-shrink: 0;
 }
 .tool__body {
-  padding: 0 11px 10px 30px;
+  overflow: hidden;
+  border-left: 2px solid var(--border);
+  padding-left: 12px;
 }
 .tool__note {
   font-size: var(--font-caption);
@@ -7398,6 +7412,18 @@ a[href] {
   flex-direction: column;
   gap: 22px;
 }
+.mem-tab-selector {
+  margin-bottom: 8px;
+}
+.mem-tab-select {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
 .mem-section {
   min-width: 0;
 }
@@ -10151,25 +10177,116 @@ a[href] {
   text-align: center;
 }
 
-.settings-notification-sound-row {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
+.settings-sound-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   width: 100%;
   max-width: 640px;
   min-width: 0;
+  margin-left: auto;
 }
 
-.settings-notification-sound-row > span {
-  flex: 0 0 auto;
-  font-size: 13px;
+.settings-sound-editor__summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.settings-sound-editor__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-soft);
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settings-sound-editor__status--enabled,
+.settings-sound-editor__status--custom {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-soft));
+  color: var(--accent);
+}
+
+.settings-sound-editor__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  flex: 0 0 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-elev);
+  color: var(--fg-dim);
+}
+
+.settings-sound-editor__toggle:hover:not(:disabled),
+.settings-sound-editor__toggle:focus-visible:not(:disabled) {
+  outline: none;
+  border-color: color-mix(in srgb, var(--fg-faint) 34%, var(--border));
+  background: var(--bg-elev-2);
   color: var(--fg);
-  min-width: 110px;
 }
 
-.settings-notification-sound-row > .chip {
-  flex: 0 0 auto;
+.settings-sound-editor__list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+}
+
+.settings-sound-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 4px 8px 4px 12px;
+}
+
+.settings-sound-row + .settings-sound-row {
+  border-top: 1px solid var(--border-soft);
+}
+
+.settings-sound-row__label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-sound-row .sound-select {
+  width: clamp(140px, 34vw, 188px);
+  min-width: 0;
+  justify-self: end;
 }
 
 .sound-select {
@@ -13043,10 +13160,12 @@ a[href] {
 .tool__body + .tool__body .tool__difflabel {
   margin-top: 2px;
 }
-/* sub-agent calls render indented under their parent task card */
+/* sub-agent calls render indented under their parent task card — the base
+   tool__body already provides border-left + 12px padding, so subagent just
+   needs left indent for hierarchy.  Expanded padding is handled by
+   .tool--open .tool__body. */
 .tool--subagent .tool__body {
-  padding-left: 16px;
-  border-left: 2px solid var(--border);
+  padding-left: 24px;
 }
 .tool__nested {
   margin: 8px 0;
