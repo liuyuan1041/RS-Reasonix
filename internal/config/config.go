@@ -78,7 +78,7 @@ type DesktopConfig struct {
 	Theme          string   `toml:"theme"`            // auto|dark|light; empty resolves to dark
 	ThemeStyle     string   `toml:"theme_style"`      // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 	CloseBehavior  string   `toml:"close_behavior"`   // quit|background; desktop window close behavior
-	DisplayMode    string   `toml:"display_mode"`     // standard|compact|minimal; transcript display mode
+	DisplayMode    string   `toml:"display_mode"`     // standard|compact (legacy "minimal" maps to compact); transcript display mode
 	StatusBarStyle string   `toml:"status_bar_style"` // icon|text; desktop status bar metric labels
 	StatusBarItems []string `toml:"status_bar_items"` // ordered visible desktop status bar items
 	CheckUpdates   *bool    `toml:"check_updates"`    // startup update checks; nil keeps the default enabled
@@ -200,10 +200,8 @@ func (c *Config) DesktopDisplayMode() string {
 	switch strings.ToLower(strings.TrimSpace(c.Desktop.DisplayMode)) {
 	case "standard":
 		return "standard"
-	case "compact":
+	case "compact", "minimal":
 		return "compact"
-	case "minimal":
-		return "minimal"
 	default:
 		return "standard"
 	}
@@ -287,6 +285,16 @@ func (c *Config) DesktopCheckUpdates() bool {
 		return true
 	}
 	return *c.Desktop.CheckUpdates
+}
+
+// ColdResumePruneEnabled reports whether stale tool results are elided when a
+// session resumes past the provider cache window. Default true (cheaper cold
+// restart); users keep full history by disabling it.
+func (c *Config) ColdResumePruneEnabled() bool {
+	if c == nil || c.Agent.ColdResumePrune == nil {
+		return true
+	}
+	return *c.Agent.ColdResumePrune
 }
 
 // DesktopTelemetry reports whether the desktop sends the anonymous launch ping.
@@ -759,6 +767,9 @@ type AgentConfig struct {
 	SoftCompactRatio  float64 `toml:"soft_compact_ratio"`
 	CompactRatio      float64 `toml:"compact_ratio"`
 	CompactForceRatio float64 `toml:"compact_force_ratio"`
+	// ColdResumePrune elides stale tool results when a session reopens past the
+	// provider cache window. nil = default enabled.
+	ColdResumePrune *bool `toml:"cold_resume_prune"`
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's

@@ -200,9 +200,13 @@ export interface AppBindings {
   MemorySuggestions(): Promise<MemorySuggestionsView>;
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
   AcceptSkillSuggestion(suggestion: SkillSuggestion): Promise<string>;
+  MemoryForTab(tabID: string): Promise<MemoryView>;
   Remember(scope: string, note: string): Promise<string>;
+  RememberForTab(tabID: string, scope: string, note: string): Promise<string>;
   Forget(name: string): Promise<void>;
+  ForgetForTab(tabID: string, name: string): Promise<void>;
   SaveDoc(path: string, body: string): Promise<string>;
+  SaveDocForTab(tabID: string, path: string, body: string): Promise<string>;
   Settings(): Promise<SettingsView>;
   HooksSettings(scope: string): Promise<HooksSettingsView>;
   SaveHooksSettings(scope: string, hooks: HookConfigView[]): Promise<void>;
@@ -246,6 +250,7 @@ export interface AppBindings {
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string): Promise<void>;
+  SetColdResumePrune(enabled: boolean): Promise<void>;
   SetTrayLocale(locale: "en" | "zh" | "zh-TW"): Promise<void>;
   // SetBypass is the legacy Wails name for YOLO/full-access tool auto-approval
   // (ask questions and plan approvals still wait; deny rules still apply).
@@ -720,7 +725,7 @@ function makeMockApp(): AppBindings {
       noProxy: "",
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
-    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent." },
+    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent.", coldResumePrune: true },
     bot: {
       enabled: !freshMock,
       model: "",
@@ -823,13 +828,12 @@ function makeMockApp(): AppBindings {
     desktopTheme: "light",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
-    displayMode: "minimal",
+    displayMode: "compact",
     statusBarStyle: "text",
     statusBarItems: [...DEFAULT_STATUS_BAR_ITEMS],
     checkUpdates: true,
     telemetry: true,
     metrics: false,
-    expandThinking: false,
     configPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai"],
     autoApproveTools: false,
@@ -2112,6 +2116,7 @@ function makeMockApp(): AppBindings {
       return {
         available: true,
         storeDir: "~/.config/reasonix/projects/-mock/memory",
+        storeGlobalDir: "~/.config/reasonix/memory/global",
         docs: [
           {
             path: "REASONIX.md",
@@ -2187,16 +2192,28 @@ function makeMockApp(): AppBindings {
       emit({ kind: "notice", level: "info", text: `created suggested skill → ${suggestion.name}` });
       return `.reasonix/skills/${suggestion.name}/SKILL.md`;
     },
-    async Remember(scope: string, note: string) {
-      emit({ kind: "notice", level: "info", text: `remembered → ${scope}` });
-      return `${scope} REASONIX.md (mock): ${note}`;
+    async MemoryForTab(_tabID: string) {
+      return this.Memory();
     },
-    async Forget(name: string) {
-      emit({ kind: "notice", level: "info", text: `forgot → ${name}` });
+    async Remember(_scope: string, _note: string) {
+      emit({ kind: "notice", level: "info", text: `remembered → ${_scope}` });
+      return `${_scope} REASONIX.md (mock): ${_note}`;
     },
-    async SaveDoc(path: string, _body: string) {
-      emit({ kind: "notice", level: "info", text: `saved → ${path}` });
-      return path;
+    async RememberForTab(_tabID: string, scope: string, note: string) {
+      return this.Remember(scope, note);
+    },
+    async Forget(_name: string) {
+      emit({ kind: "notice", level: "info", text: `forgot → ${_name}` });
+    },
+    async ForgetForTab(_tabID: string, name: string) {
+      return this.Forget(name);
+    },
+    async SaveDoc(_path: string, _body: string) {
+      emit({ kind: "notice", level: "info", text: `saved → ${_path}` });
+      return _path;
+    },
+    async SaveDocForTab(_tabID: string, path: string, body: string) {
+      return this.SaveDoc(path, body);
     },
     async Settings() {
       return JSON.parse(JSON.stringify(settings)) as SettingsView;
@@ -2417,9 +2434,7 @@ function makeMockApp(): AppBindings {
         async SetDesktopMetrics(enabled: boolean) {
           settings.metrics = enabled;
         },
-        async SetExpandThinking(on: boolean) {
-          settings.expandThinking = on;
-        },
+        async SetExpandThinking(_on: boolean) {},
         async MigrateDesktopPreferences(language: string, theme: string, style: string) {
           if (!settings.desktopLanguage) settings.desktopLanguage = language === "en" || language === "zh" || language === "zh-TW" ? language : "";
           if (!settings.desktopTheme && !settings.desktopThemeStyle) {
@@ -2428,7 +2443,10 @@ function makeMockApp(): AppBindings {
           }
         },
     async SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string) {
-      settings.agent = { temperature, maxSteps, plannerMaxSteps, systemPrompt };
+      settings.agent = { ...settings.agent, temperature, maxSteps, plannerMaxSteps, systemPrompt };
+    },
+    async SetColdResumePrune(enabled: boolean) {
+      settings.agent = { ...settings.agent, coldResumePrune: enabled };
     },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {

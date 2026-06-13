@@ -195,14 +195,12 @@ func (c *Config) SetDesktopCloseBehavior(mode string) error {
 // SetDesktopDisplayMode sets the transcript display mode. UI-only.
 func (c *Config) SetDesktopDisplayMode(mode string) error {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "compact":
+	case "compact", "minimal":
 		c.Desktop.DisplayMode = "compact"
-	case "minimal":
-		c.Desktop.DisplayMode = "minimal"
 	case "", "standard":
 		c.Desktop.DisplayMode = "standard"
 	default:
-		return fmt.Errorf("display mode %q: must be standard|compact|minimal", mode)
+		return fmt.Errorf("display mode %q: must be standard|compact", mode)
 	}
 	return nil
 }
@@ -248,6 +246,12 @@ func (c *Config) SetDesktopStatusBarItems(items []string) error {
 // startup. Manual checks remain available in Settings regardless of this value.
 func (c *Config) SetDesktopCheckUpdates(enabled bool) error {
 	c.Desktop.CheckUpdates = &enabled
+	return nil
+}
+
+// SetColdResumePrune toggles auto-elision of stale tool results on cold resume.
+func (c *Config) SetColdResumePrune(enabled bool) error {
+	c.Agent.ColdResumePrune = &enabled
 	return nil
 }
 

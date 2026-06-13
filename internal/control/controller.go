@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,10 +76,13 @@ type Controller struct {
 	mem           *memory.Set
 	cleanup       func()
 	autoPlan      string
-	shell         sandbox.Shell // interpreter for user-invoked "!" commands; zero = auto
-	classifier    autoPlanClassifier
-	startedOnce   bool                             // guards the one-shot SessionStart hook on first turn
-	onRemember    func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
+	// disableColdResumePrune skips stale-tool-result elision on cold resume.
+	// Zero value keeps the prune on (the cheaper default).
+	disableColdResumePrune bool
+	shell                  sandbox.Shell // interpreter for user-invoked "!" commands; zero = auto
+	classifier             autoPlanClassifier
+	startedOnce            bool                             // guards the one-shot SessionStart hook on first turn
+	onRemember             func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -144,6 +148,16 @@ type Controller struct {
 	// just got cleared to do. Deny rules still bite (those never reach the
 	// approver). Reset when the execution turn returns.
 	approvedPlanAutoApproveTools bool
+
+	// approvedPlanActive carries that same go-ahead across user-directed pauses in
+	// an approved plan. It stays true only while the approved plan has not reported
+	// completion, so an explicit continuation turn resumes without downgrading into
+	// per-tool approval.
+	approvedPlanActive bool
+	// approvedPlanContinuationTurn is true only for the current user turn when
+	// the user explicitly asked to continue that approved plan.
+	approvedPlanContinuationTurn bool
+	approvedPlanStart            int // message index where the approved execution began
 
 	// toolApprovalMode is the runtime approval posture for permission-gated tool
 	// calls. "ask" prompts by default, "auto" lets the policy auto-approve the
@@ -252,6 +266,10 @@ type Options struct {
 	// no confinement). Frontends pass the cwd they launched the session in.
 	WorkspaceRoot string
 	AutoPlan      string
+	// DisableColdResumePrune skips the stale-tool-result elision that otherwise
+	// runs when a session resumes past the provider cache window. Zero value
+	// keeps the prune on (the cheaper default).
+	DisableColdResumePrune bool
 	// Shell is the interpreter user-invoked "!" commands run under, so /shell
 	// matches the agent's configured [tools.shell] choice. Zero value = auto.
 	Shell      sandbox.Shell
@@ -277,41 +295,43 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:           opts.Runner,
-		executor:         opts.Executor,
-		sink:             sink,
-		policy:           opts.Policy,
-		label:            opts.Label,
-		systemPrompt:     opts.SystemPrompt,
-		sessionDir:       opts.SessionDir,
-		sessionPath:      opts.SessionPath,
-		host:             opts.Host,
-		commands:         opts.Commands,
-		skills:           opts.Skills,
-		allSkills:        opts.AllSkills,
-		skillStore:       opts.SkillStore,
-		allSkillStore:    opts.AllSkillStore,
-		hooks:            opts.Hooks,
-		mem:              opts.Memory,
-		cleanup:          opts.Cleanup,
-		autoPlan:         normalizeAutoPlan(opts.AutoPlan),
-		shell:            opts.Shell,
-		classifier:       classifier,
-		onRemember:       opts.OnRemember,
-		balanceURL:       opts.BalanceURL,
-		balanceKey:       opts.BalanceKey,
-		balanceClient:    opts.BalanceClient,
-		jobs:             opts.Jobs,
-		reg:              opts.Registry,
-		pluginCtx:        pluginCtx,
-		cpRoot:           opts.WorkspaceRoot,
-		toolApprovalMode: ToolApprovalAsk,
-		approvals:        map[string]pendingApproval{},
-		asks:             map[string]pendingAsk{},
-		granted:          map[string]bool{},
+		runner:                 opts.Runner,
+		executor:               opts.Executor,
+		sink:                   sink,
+		policy:                 opts.Policy,
+		label:                  opts.Label,
+		systemPrompt:           opts.SystemPrompt,
+		sessionDir:             opts.SessionDir,
+		sessionPath:            opts.SessionPath,
+		host:                   opts.Host,
+		commands:               opts.Commands,
+		skills:                 opts.Skills,
+		allSkills:              opts.AllSkills,
+		skillStore:             opts.SkillStore,
+		allSkillStore:          opts.AllSkillStore,
+		hooks:                  opts.Hooks,
+		mem:                    opts.Memory,
+		cleanup:                opts.Cleanup,
+		autoPlan:               normalizeAutoPlan(opts.AutoPlan),
+		disableColdResumePrune: opts.DisableColdResumePrune,
+		shell:                  opts.Shell,
+		classifier:             classifier,
+		onRemember:             opts.OnRemember,
+		balanceURL:             opts.BalanceURL,
+		balanceKey:             opts.BalanceKey,
+		balanceClient:          opts.BalanceClient,
+		jobs:                   opts.Jobs,
+		reg:                    opts.Registry,
+		pluginCtx:              pluginCtx,
+		cpRoot:                 opts.WorkspaceRoot,
+		toolApprovalMode:       ToolApprovalAsk,
+		approvals:              map[string]pendingApproval{},
+		asks:                   map[string]pendingAsk{},
+		granted:                map[string]bool{},
 	}
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
+	c.setActiveJobSession(opts.SessionPath)
 	if c.executor != nil {
 		c.executor.SetPreEditHook(func(ch diff.Change) {
 			if c.cp != nil {
@@ -464,6 +484,11 @@ const planApprovalTool = "exit_plan_mode"
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
 const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write (this establishes the task list); 2) execute the sub-step; 3) call complete_step with evidence — the host then marks that sub-step completed and moves the next one to in_progress for you. Repeat 2–3 for each remaining sub-step. You don’t need another todo_write to mark steps completed; each complete_step advances the list. Sign off one sub-step at a time — never batch multiple completions."
 
+// approvedPlanExecutionMarker is prepended to later user turns while an approved
+// plan is paused with unfinished todos. It preserves the execution contract in
+// model context without mutating the cache-stable system prompt or tool schema.
+const approvedPlanExecutionMarker = "[Approved plan execution continues — the prior plan is already approved. Continue the next unfinished step without asking again for ordinary work covered by that plan. Keep todo_write current by sending the complete list whenever a step starts or finishes.]"
+
 // runTurn runs one model turn, then applies the plan-approval gate. This is the
 // single, frontend-agnostic plan flow: in plan mode the model just researches
 // (writers are blocked) and writes its plan as a normal answer — no special tool.
@@ -522,9 +547,12 @@ func (c *Controller) runGoalLoopWithRawDisplay(ctx context.Context, input, raw, 
 }
 
 func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, display string) error {
+	defer c.clearApprovedPlanContinuationTurn()
 	c.maybeSessionStart(ctx)
 	c.maybeAutoPlan(ctx, raw)
-	ctx = agent.WithParentSession(ctx, c.parentSessionID())
+	parentSession := c.parentSessionID()
+	ctx = agent.WithParentSession(ctx, parentSession)
+	ctx = jobs.WithSession(ctx, parentSession)
 	ctx = agent.WithUserImages(ctx, c.inputImages(input))
 	input = c.Compose(input)
 	startMessages := c.messageCount()
@@ -549,6 +577,7 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	if err := c.runner.Run(ctx, input); err != nil {
 		return err
 	}
+	c.refreshApprovedPlanExecutionFromHistory()
 	c.mu.Lock()
 	plan := c.planMode
 	c.mu.Unlock()
@@ -569,7 +598,8 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 		return nil // keep planning; plan mode stays on
 	}
 	c.SetPlanMode(false)
-	seededTodos := c.seedPlanTodos(proposal)
+	todoArgs := c.seedPlanTodos(proposal)
+	c.beginApprovedPlanExecution(todoArgs)
 	// The plan is the go-ahead: don't re-prompt for each write of the approved
 	// work. Auto-approve writers for the duration of this execution turn only.
 	c.mu.Lock()
@@ -580,11 +610,14 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 		c.approvedPlanAutoApproveTools = false
 		c.mu.Unlock()
 	}()
-	if err := c.runner.Run(ctx, planApprovedMessage); err != nil {
-		return err
+	err = c.runner.Run(ctx, planApprovedMessage)
+	if err == nil && todoArgs != "" && !c.approvedPlanHasTodoUpdateSinceStart() {
+		c.completePlanTodos(todoArgs)
+		c.clearApprovedPlanExecution()
+		return nil
 	}
-	c.completePlanTodos(seededTodos)
-	return nil
+	c.refreshApprovedPlanExecutionFromHistory()
+	return err
 }
 
 func (c *Controller) continueGoal(ctx context.Context) error {
@@ -1058,7 +1091,9 @@ func (c *Controller) notice(text string) {
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) error {
 	c.maybeSessionStart(ctx)
-	ctx = agent.WithParentSession(ctx, c.parentSessionID())
+	parentSession := c.parentSessionID()
+	ctx = agent.WithParentSession(ctx, parentSession)
+	ctx = jobs.WithSession(ctx, parentSession)
 	ctx = agent.WithUserImages(ctx, c.inputImages(input))
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
@@ -1266,6 +1301,11 @@ func (c *Controller) ReplayPendingPrompts() {
 func (c *Controller) SetPlanMode(v bool) {
 	c.mu.Lock()
 	c.planMode = v
+	if v {
+		c.approvedPlanActive = false
+		c.approvedPlanContinuationTurn = false
+		c.approvedPlanStart = 0
+	}
 	c.mu.Unlock()
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
@@ -1373,7 +1413,9 @@ func (c *Controller) NewSession() error {
 		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
 		c.mu.Unlock()
 	}
+	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.clearApprovedPlanExecution()
 	c.rebindCheckpoints(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
@@ -1395,8 +1437,13 @@ func (c *Controller) ClearSession() error {
 	if running {
 		return fmt.Errorf("cannot clear while a turn is running")
 	}
-	if err := removeSessionArtifacts(oldPath); err != nil {
-		return err
+	destroy := c.BeginDestroySession(oldPath)
+	if !destroy.Async {
+		if err := removeSessionArtifacts(oldPath); err != nil {
+			destroy.Finish()
+			return err
+		}
+		destroy.Finish()
 	}
 	c.hooks.SessionEnd(context.Background())
 	if c.sessionDir != "" {
@@ -1404,12 +1451,23 @@ func (c *Controller) ClearSession() error {
 		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
 		c.mu.Unlock()
 	}
+	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.clearApprovedPlanExecution()
 	c.rebindCheckpoints(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
 	c.hooks.SessionStart(context.Background())
+	if destroy.Async {
+		go func() {
+			destroy.Wait()
+			if err := removeSessionArtifacts(oldPath); err != nil {
+				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "clear session cleanup failed: " + err.Error()})
+			}
+			destroy.Finish()
+		}()
+	}
 	return nil
 }
 
@@ -1429,6 +1487,9 @@ func removeSessionArtifacts(path string) error {
 		if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	if err := agent.DeleteSubagentsByParent(filepath.Dir(path), agent.BranchID(path)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1582,7 +1643,9 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		c.executor.SetSession(sess)
 		c.mu.Lock()
 		c.sessionPath = newPath
+		c.clearApprovedPlanExecutionLocked()
 		c.mu.Unlock()
+		c.setActiveJobSession(newPath)
 		c.rebindCheckpoints(newPath)
 	}
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
@@ -1640,7 +1703,11 @@ func (c *Controller) Branch(name string) (string, error) {
 	c.executor.SetSession(sess)
 	c.mu.Lock()
 	c.sessionPath = newPath
+	c.approvedPlanActive = false
+	c.approvedPlanContinuationTurn = false
+	c.approvedPlanStart = 0
 	c.mu.Unlock()
+	c.setActiveJobSession(newPath)
 	c.rebindCheckpoints(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
@@ -1686,7 +1753,11 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	}
 	c.mu.Lock()
 	c.sessionPath = match.Path
+	c.approvedPlanActive = false
+	c.approvedPlanContinuationTurn = false
+	c.approvedPlanStart = 0
 	c.mu.Unlock()
+	c.setActiveJobSession(match.Path)
 	c.rebindCheckpoints(match.Path)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
@@ -1784,7 +1855,11 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	}
 	c.mu.Lock()
 	c.sessionPath = path
+	c.approvedPlanActive = false
+	c.approvedPlanContinuationTurn = false
+	c.approvedPlanStart = 0
 	c.mu.Unlock()
+	c.setActiveJobSession(path)
 	c.rebindCheckpoints(path)
 	c.maybeColdResumePrune(path)
 }
@@ -1801,7 +1876,7 @@ var cacheColdAfter = 24 * time.Hour
 // been idle past the provider's cache retention, then persists the pruned
 // transcript so the saved file and the prompt stay in sync.
 func (c *Controller) maybeColdResumePrune(path string) {
-	if c.executor == nil || path == "" {
+	if c.disableColdResumePrune || c.executor == nil || path == "" {
 		return
 	}
 	// Idle time comes from branch meta only — every session the controller has
@@ -1915,7 +1990,54 @@ func (c *Controller) SetSessionPath(p string) {
 	c.mu.Lock()
 	c.sessionPath = p
 	c.mu.Unlock()
+	c.setActiveJobSession(p)
 	c.rebindCheckpoints(p)
+}
+
+// SessionDestroyHandle separates waiting for cancelled jobs from ending the
+// destroy window, so callers can move/delete persistent artifacts in between.
+type SessionDestroyHandle struct {
+	Wait   func()
+	Finish func()
+	Async  bool
+}
+
+// BeginDestroySession marks a session as leaving active use and cancels its
+// background jobs. Call Wait before moving/deleting artifacts, then Finish after
+// persistent cleanup/move work is complete.
+func (c *Controller) BeginDestroySession(sessionPath string) SessionDestroyHandle {
+	parentSession := agent.BranchID(sessionPath)
+	if c.jobs == nil || parentSession == "" {
+		noop := func() {}
+		return SessionDestroyHandle{Wait: noop, Finish: noop}
+	}
+	done := c.jobs.DestroySession(parentSession)
+	return SessionDestroyHandle{
+		Wait: func() {
+			for _, ch := range done {
+				<-ch
+			}
+		},
+		Finish: func() {
+			c.jobs.FinishDestroySession(parentSession)
+		},
+		Async: len(done) > 0,
+	}
+}
+
+// IsDestroyingSession reports whether sessionPath is currently in the destroy
+// window for this controller's job manager.
+func (c *Controller) IsDestroyingSession(sessionPath string) bool {
+	if c.jobs == nil {
+		return false
+	}
+	return c.jobs.IsDestroying(agent.BranchID(sessionPath))
+}
+
+func (c *Controller) setActiveJobSession(sessionPath string) {
+	if c.jobs != nil {
+		c.jobs.SetActiveSession(agent.BranchID(sessionPath))
+	}
 }
 
 // SessionDir reports the directory new session files land in ("" disables
@@ -2354,7 +2476,7 @@ func (c *Controller) Jobs() []jobs.View {
 	if c.jobs == nil {
 		return nil
 	}
-	return c.jobs.Running()
+	return c.jobs.RunningForSession(c.parentSessionID())
 }
 
 // SetToolApprovalMode changes the runtime approval posture for permission-gated
@@ -2578,8 +2700,9 @@ type gateApprover struct{ c *Controller }
 func (g gateApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
 	subject = approvalDisplaySubject(tool, subject, args)
 	// Auto-allow without prompting while executing a just-approved plan (the plan
-	// was the approval) or while YOLO/full-access tool auto-approval is on. Deny
-	// rules already bit before this point, so they still block.
+	// was the approval), during an explicit continuation turn of that approved
+	// plan, or while YOLO/full-access tool auto-approval is on. Deny rules already
+	// bit before this point, so they still block.
 	g.c.mu.Lock()
 	auto := g.c.approvalBypassAllowsLocked(tool)
 	g.c.mu.Unlock()
@@ -2785,6 +2908,108 @@ func parsePlanTodos(plan string) []seedTodo {
 	return todos
 }
 
+func (c *Controller) beginApprovedPlanExecution(todoArgs string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.approvedPlanActive = true
+	if todoArgs != "" {
+		c.approvedPlanActive = todosIncomplete(todoArgs)
+	}
+	c.approvedPlanContinuationTurn = false
+	c.approvedPlanStart = 0
+	if c.executor != nil {
+		c.approvedPlanStart = len(c.executor.Session().Messages)
+	}
+}
+
+func (c *Controller) clearApprovedPlanExecution() {
+	c.mu.Lock()
+	c.clearApprovedPlanExecutionLocked()
+	c.mu.Unlock()
+}
+
+func (c *Controller) clearApprovedPlanExecutionLocked() {
+	c.approvedPlanActive = false
+	c.approvedPlanContinuationTurn = false
+	c.approvedPlanStart = 0
+}
+
+func (c *Controller) clearApprovedPlanContinuationTurn() {
+	c.mu.Lock()
+	c.approvedPlanContinuationTurn = false
+	c.mu.Unlock()
+}
+
+func (c *Controller) refreshApprovedPlanExecutionFromHistory() {
+	c.mu.Lock()
+	active := c.approvedPlanActive
+	start := c.approvedPlanStart
+	c.mu.Unlock()
+	if !active || c.executor == nil {
+		return
+	}
+	msgs := c.executor.Session().Messages
+	if start < 0 || start > len(msgs) {
+		start = len(msgs)
+	}
+	args, ok := latestTodoArgsSince(msgs, start)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	c.approvedPlanActive = todosIncomplete(args)
+	if !c.approvedPlanActive {
+		c.approvedPlanContinuationTurn = false
+		c.approvedPlanStart = 0
+	}
+	c.mu.Unlock()
+}
+
+func (c *Controller) approvedPlanHasTodoUpdateSinceStart() bool {
+	c.mu.Lock()
+	active := c.approvedPlanActive
+	start := c.approvedPlanStart
+	c.mu.Unlock()
+	if !active || c.executor == nil {
+		return false
+	}
+	msgs := c.executor.Session().Messages
+	if start < 0 || start > len(msgs) {
+		start = len(msgs)
+	}
+	_, ok := latestTodoArgsSince(msgs, start)
+	return ok
+}
+
+func latestTodoArgsSince(msgs []provider.Message, start int) (string, bool) {
+	for i := len(msgs) - 1; i >= start; i-- {
+		for j := len(msgs[i].ToolCalls) - 1; j >= 0; j-- {
+			tc := msgs[i].ToolCalls[j]
+			if tc.Name == "todo_write" {
+				return tc.Arguments, true
+			}
+		}
+	}
+	return "", false
+}
+
+func todosIncomplete(args string) bool {
+	var p struct {
+		Todos []struct {
+			Status string `json:"status"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Todos) == 0 {
+		return false
+	}
+	for _, t := range p.Todos {
+		if t.Status != "completed" {
+			return true
+		}
+	}
+	return false
+}
+
 // listItem parses a markdown list line ("- x", "* x", "1. x", "2) x") into its
 // task text and a nesting level derived from leading indentation (0 for a
 // top-level item, 1 for an indented sub-step — capped at 1 since the plan is
@@ -2948,7 +3173,12 @@ func approvalNotificationText(tool, subject string) string {
 }
 
 func (c *Controller) approvalBypassAllowsLocked(tool string) bool {
-	return !requiresFreshApprovalTool(tool) && (c.toolApprovalMode == ToolApprovalYolo || c.approvedPlanAutoApproveTools)
+	if requiresFreshApprovalTool(tool) {
+		return false
+	}
+	return c.toolApprovalMode == ToolApprovalYolo ||
+		c.approvedPlanAutoApproveTools ||
+		(c.approvedPlanActive && c.approvedPlanContinuationTurn)
 }
 
 func (c *Controller) autoApprovalWouldAllowLocked(tool, subject string) bool {
