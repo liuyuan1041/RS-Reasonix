@@ -709,6 +709,7 @@ export interface BotConnectionView {
   enabled: boolean;
   status: "disconnected" | "pending" | "connected" | "error" | string;
   model: string;
+  toolApprovalMode: ToolApprovalMode | "" | string;
   workspaceRoot: string;
   credential: BotConnectionCredentialView;
   sessionMappings: BotConnectionSessionMappingView[];
@@ -720,6 +721,7 @@ export interface BotConnectionView {
 export interface BotSettingsView {
   enabled: boolean;
   model: string;
+  toolApprovalMode: ToolApprovalMode | "" | string;
   maxSteps: number;
   debounceMs: number;
   allowlist: BotAllowlistView;
@@ -727,6 +729,14 @@ export interface BotSettingsView {
   feishu: FeishuBotView;
   weixin: WeixinBotView;
   connections: BotConnectionView[];
+}
+
+export interface BotRuntimeStatusView {
+  running: boolean;
+  status: string;
+  message: string;
+  connections: number;
+  startedAt: string;
 }
 
 export interface BotInstallStartResult {
@@ -794,6 +804,8 @@ export interface SettingsView {
   desktopThemeStyle: string;
   closeBehavior: string; // "background" | "quit"
   displayMode: string;   // "standard" | "compact" | "minimal"
+  statusBarStyle: string; // "icon" | "text"
+  statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   telemetry: boolean; // anonymous launch ping (install id + version + OS)
   metrics: boolean; // opt-in aggregate agent metrics (anonymous signal/bucket counts)

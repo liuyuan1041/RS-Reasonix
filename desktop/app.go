@@ -79,6 +79,7 @@ type App struct {
 
 	mediaTokens *mediaTokenStore
 	botInstalls map[string]*botInstallSession
+	botRuntime  *desktopBotRuntime
 
 	metrics atomic.Pointer[metricsAggregator]
 }
@@ -249,7 +250,7 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 // NewApp constructs the bound object. Tabs are restored in startup from the
 // last session's desktop-tabs.json.
 func NewApp() *App {
-	return &App{tabs: map[string]*WorkspaceTab{}, mediaTokens: newMediaTokenStore(), botInstalls: map[string]*botInstallSession{}}
+	return &App{tabs: map[string]*WorkspaceTab{}, mediaTokens: newMediaTokenStore(), botInstalls: map[string]*botInstallSession{}, botRuntime: newDesktopBotRuntime()}
 }
 
 func (a *App) bootContext() context.Context {
@@ -294,8 +295,10 @@ func (a *App) startup(ctx context.Context) {
 	}()
 
 	go a.restoreOrBuildTabs()
+	go a.refreshBotRuntime()
 	go a.sendStartupPing()
 	go a.flushMetrics()
+	go a.flushPendingCrash()
 }
 
 // embedsDataDir returns the directory where embedded assets (Python MCP server,
@@ -391,6 +394,7 @@ func backgroundRestoreShouldMaximise(goos string, wasMaximised bool) bool {
 // restoreOrBuildTabs restores the tabs from the last session, or creates a
 // default Global tab on first launch.
 func (a *App) restoreOrBuildTabs() {
+	defer a.recoverToPending("restoreOrBuildTabs")
 	ctx := a.ctx
 	ensureWorkspace()
 
@@ -498,6 +502,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.stopBotRuntime()
 	a.stopTray()
 	// Save window geometry synchronously from Go so it's persisted even if the
 	// frontend's beforeunload promise hasn't resolved yet.
