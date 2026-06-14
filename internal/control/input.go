@@ -2,13 +2,11 @@ package control
 
 import (
 	"context"
-	"regexp"
 	"strings"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/skill"
 )
-
-var reComposeBlock = regexp.MustCompile(`(?s)^\s*<(?:memory-update|background-jobs)>.*?</(?:memory-update|background-jobs)>\s*\n`)
 
 // PlanModeMarker is prepended to every user turn while plan mode is on. It rides
 // in the user message (not the system prompt or tools), so the cache-stable
@@ -29,22 +27,13 @@ const (
 
 // StripComposePrefixes removes controller-injected prefixes from a composed
 // user message so that the display text matches what the user actually typed.
-// It strips the PlanModeMarker, <memory-update>…</memory-update>, and
-// <background-jobs>…</background-jobs> blocks that Compose prepends to user
-// turns. This is used as a fallback when no .display.json sidecar recording
-// exists (e.g. sessions created before the display-recording feature, or
-// synthetic user messages injected by the controller).
+// It strips the PlanModeMarker plus transient XML blocks such as
+// <reasoning-language>, <memory-update>, and <background-jobs> that Compose
+// prepends to user turns. This is used as a fallback when no .display.json
+// sidecar recording exists (e.g. sessions created before the display-recording
+// feature, or synthetic user messages injected by the controller).
 func StripComposePrefixes(content string) string {
-	s := content
-	for {
-		next := reComposeBlock.ReplaceAllStringFunc(s, func(match string) string {
-			return ""
-		})
-		if next == s {
-			break
-		}
-		s = next
-	}
+	s := agent.StripTransientUserBlocks(content)
 	s = strings.TrimPrefix(s, PlanModeMarker+"\n\n")
 	s = strings.TrimPrefix(s, PlanModeMarker)
 	s = strings.TrimSpace(s)
@@ -89,27 +78,14 @@ var syntheticPrefixes = []string{
 
 // Compose applies the plan-mode marker to a turn's text when plan mode is on,
 // returning the message to actually send to the model. The frontend keeps
-// showing the raw text as the user bubble. When an approved plan is paused,
-// only an explicit continuation command carries that approval into the next turn.
+// showing the raw text as the user bubble.
 func (c *Controller) Compose(text string) string {
 	c.mu.Lock()
 	plan := c.planMode
 	goal := c.goal
 	goalStatus := c.goalStatus
-	approvedPlan := c.approvedPlanActive
-	continuation := false
 	notes := c.pendingMemory
 	c.pendingMemory = nil
-	if !plan && approvedPlan {
-		continuation = isApprovedPlanContinuation(text)
-		if continuation {
-			c.approvedPlanContinuationTurn = true
-		} else {
-			c.approvedPlanActive = false
-			c.approvedPlanContinuationTurn = false
-			c.approvedPlanStart = 0
-		}
-	}
 	c.mu.Unlock()
 
 	if strings.TrimSpace(goal) != "" && goalStatus == GoalStatusRunning {
@@ -117,8 +93,9 @@ func (c *Controller) Compose(text string) string {
 	}
 	if plan {
 		text = PlanModeMarker + "\n\n" + text
-	} else if continuation {
-		text = approvedPlanExecutionMarker + "\n\n" + text
+	}
+	if note := reasoningLanguageBlock(c.reasoningLanguage); note != "" {
+		text = note + "\n\n" + text
 	}
 
 	// Memory added mid-session rides the turn (never the cached system prefix),
@@ -146,6 +123,17 @@ func (c *Controller) Compose(text string) string {
 	return text
 }
 
+func reasoningLanguageBlock(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh":
+		return "<reasoning-language>\nVisible reasoning/thinking text preference: use Simplified Chinese when the provider exposes reasoning text. Keep code, identifiers, file paths, shell commands, and untranslated technical terms in their original form. This preference does not override an explicit user request for the final answer language.\n</reasoning-language>"
+	case "en":
+		return "<reasoning-language>\nVisible reasoning/thinking text preference: use English when the provider exposes reasoning text. Keep code, identifiers, file paths, shell commands, and untranslated technical terms in their original form. This preference does not override an explicit user request for the final answer language.\n</reasoning-language>"
+	default:
+		return ""
+	}
+}
+
 func activeGoalBlock(goal string) string {
 	goal = strings.TrimSpace(goal)
 	goal = strings.ReplaceAll(goal, activeGoalClose, "<\\/active-goal>")
@@ -158,19 +146,6 @@ func activeGoalBlock(goal string) string {
 	b.WriteString("\n")
 	b.WriteString(activeGoalClose)
 	return b.String()
-}
-
-func isApprovedPlanContinuation(text string) bool {
-	s := strings.ToLower(strings.TrimSpace(text))
-	s = strings.TrimRight(s, ".。!！")
-	s = strings.Join(strings.Fields(s), " ")
-	switch s {
-	case "继续", "继续执行", "继续吧", "接着执行", "下一步", "执行下一步",
-		"continue", "resume", "proceed", "go on", "continue execution":
-		return true
-	default:
-		return false
-	}
 }
 
 // MemoryQuickAddNote parses the "# <note>" memory shortcut. The space after

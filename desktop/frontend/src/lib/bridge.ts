@@ -7,6 +7,7 @@
 
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 
+import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
@@ -201,6 +202,9 @@ export interface AppBindings {
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
   AcceptSkillSuggestion(suggestion: SkillSuggestion): Promise<string>;
   MemoryForTab(tabID: string): Promise<MemoryView>;
+  MemorySuggestionsForTab(tabID: string): Promise<MemorySuggestionsView>;
+  AcceptMemorySuggestionForTab(tabID: string, suggestion: MemorySuggestion): Promise<string>;
+  AcceptSkillSuggestionForTab(tabID: string, suggestion: SkillSuggestion): Promise<string>;
   Remember(scope: string, note: string): Promise<string>;
   RememberForTab(tabID: string, scope: string, note: string): Promise<string>;
   Forget(name: string): Promise<void>;
@@ -251,6 +255,7 @@ export interface AppBindings {
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string): Promise<void>;
   SetColdResumePrune(enabled: boolean): Promise<void>;
+  SetReasoningLanguage(lang: string): Promise<void>;
   SetTrayLocale(locale: "en" | "zh" | "zh-TW"): Promise<void>;
   // SetBypass is the legacy Wails name for YOLO/full-access tool auto-approval
   // (ask questions and plan approvals still wait; deny rules still apply).
@@ -406,11 +411,49 @@ export function onProjectTreeChanged(cb: () => void): () => void {
 
 // app proxies each call to the live binding (or the dev mock only when truly
 // outside the shell), so a late-injected window.go is picked up transparently.
+function bridgeBreadcrumb(method: string): string {
+  if (method === "ReportCrash") return "";
+  if (/^(Submit|SubmitDisplay|RunShell|Steer|Cancel|Approve|AnswerQuestion|ReplayPendingPrompts)/.test(method))
+    return `turn ${method}`;
+  if (/^(SetModel|SetEffort|SetTokenMode|SetDefaultModel|SetPlannerModel|SetSubagentModel|SetSubagentEffort)/.test(method))
+    return `model ${method}`;
+  if (/^(SetDesktop|SetCloseBehavior|SetDisplayMode|SetStatusBar|SetExpandThinking|SetAutoPlan|SetReasoningLanguage)/.test(method))
+    return `settings ${method}`;
+  if (/^(SaveProvider|AddOfficialProviderAccess|RemoveProviderAccess|DeleteProvider|SetProviderKey|ClearProviderKey|FetchProviderModels|ConnectKey)/.test(method))
+    return `provider ${method}`;
+  if (/^(CheckUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(AddMCPServer|UpdateMCPServer|RemoveMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
+    return `mcp ${method}`;
+  if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
+    return `skill ${method}`;
+  if (/^(OpenProjectTab|OpenGlobalTab|EnsureBlankTab|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
+    return `nav ${method}`;
+  return "";
+}
+
 export const app: AppBindings = new Proxy({} as AppBindings, {
   get(_t, prop) {
     const target = realApp() ?? getMock();
     const v = (target as unknown as Record<string, unknown>)[String(prop)];
-    return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    if (typeof v !== "function") return v;
+    return (...args: unknown[]) => {
+      const method = String(prop);
+      const crumb = bridgeBreadcrumb(method);
+      if (crumb) addBreadcrumb("bridge", crumb);
+      try {
+        const result = (v as (...a: unknown[]) => unknown).apply(target, args);
+        if (result && typeof (result as Promise<unknown>).then === "function") {
+          return (result as Promise<unknown>).catch((err) => {
+            if (crumb) addBreadcrumb("bridge.error", method);
+            throw err;
+          });
+        }
+        return result;
+      } catch (err) {
+        if (crumb) addBreadcrumb("bridge.error", method);
+        throw err;
+      }
+    };
   },
 });
 
@@ -725,7 +768,7 @@ function makeMockApp(): AppBindings {
       noProxy: "",
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
-    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent.", coldResumePrune: true },
+    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent.", coldResumePrune: true, reasoningLanguage: "auto" },
     bot: {
       enabled: !freshMock,
       model: "",
@@ -2192,6 +2235,15 @@ function makeMockApp(): AppBindings {
       emit({ kind: "notice", level: "info", text: `created suggested skill → ${suggestion.name}` });
       return `.reasonix/skills/${suggestion.name}/SKILL.md`;
     },
+    async MemorySuggestionsForTab(_tabID: string) {
+      return this.MemorySuggestions();
+    },
+    async AcceptMemorySuggestionForTab(_tabID: string, suggestion: MemorySuggestion) {
+      return this.AcceptMemorySuggestion(suggestion);
+    },
+    async AcceptSkillSuggestionForTab(_tabID: string, suggestion: SkillSuggestion) {
+      return this.AcceptSkillSuggestion(suggestion);
+    },
     async MemoryForTab(_tabID: string) {
       return this.Memory();
     },
@@ -2447,6 +2499,10 @@ function makeMockApp(): AppBindings {
     },
     async SetColdResumePrune(enabled: boolean) {
       settings.agent = { ...settings.agent, coldResumePrune: enabled };
+    },
+    async SetReasoningLanguage(lang: string) {
+      const normalized = lang === "zh" || lang === "en" ? lang : "auto";
+      settings.agent = { ...settings.agent, reasoningLanguage: normalized };
     },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {
