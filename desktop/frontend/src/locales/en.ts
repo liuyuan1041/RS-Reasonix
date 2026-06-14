@@ -293,15 +293,15 @@ export const en = {
   "caps.hideDiagnostics": "Hide diagnostic paths",
 
   // welcome / empty state
-  "welcome.title": "A coding agent",
-  "welcome.tagline": "Describe a task, or ask anything.",
+  "welcome.title": "Welcome to RS-Reasonix",
+  "welcome.tagline": "A remote-sensing AI agent built for long sessions and low cost. First time? Type /set to configure.",
   "welcome.hintCommands": "commands",
   "welcome.hintFiles": "reference files",
   "welcome.hintSend": "send",
-  "welcome.ex1": "Explain this codebase's architecture",
-  "welcome.ex2": "Summarize the recent git changes",
-  "welcome.ex3": "Where is the agent run loop, and what does it do?",
-  "welcome.ex4": "Find and fix a bug in this project",
+  "welcome.ex1": "Show metadata for this .tif file",
+  "welcome.ex2": "Convert all shapefiles to GeoJSON",
+  "welcome.ex3": "Calculate NDVI for Sentinel-2 over Taihu Lake 2023",
+  "welcome.ex4": "Find Landsat 8 data for Beijing 2024",
 
   // composer
   "composer.placeholder": "Message RS-Reasonix…  ( / commands · @ files · ! shell )",
