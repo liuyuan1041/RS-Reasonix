@@ -7,8 +7,6 @@ import { normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarI
 import { type BalanceInfo, type CollaborationMode, type ContextInfo, type JobView, type ToolApprovalMode, type WireUsage } from "../lib/types";
 import { GeoStatusDots } from "./geo/GeoStatusDots";
 
-
-
 type StatusBarLabelStyle = "icon" | "text";
 
 // JobsChip is the status-bar background-jobs indicator: a count that opens an

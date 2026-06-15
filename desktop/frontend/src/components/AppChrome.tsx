@@ -3,6 +3,7 @@ import { TabBar } from "./TabBar";
 import type { TabMeta } from "../lib/types";
 import { useT } from "../lib/i18n";
 
+
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
 interface AppChromeProps {
