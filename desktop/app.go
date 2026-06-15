@@ -3556,6 +3556,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	if err != nil {
 		return err
 	}
+	modelRef := entry.Name + "/" + entry.Model
 	effort, err := config.NormalizeEffort(entry, level)
 	if err != nil {
 		return err
@@ -3569,7 +3570,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		tab.Ctrl.Close()
 	}
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:          tab.model,
+		Model:          modelRef,
 		RequireKey:     false,
 		Sink:           tab.sink,
 		WorkspaceRoot:  tab.WorkspaceRoot,
@@ -3583,6 +3584,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	a.bindControllerDisplayRecorder(newCtrl)
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
+	tab.model = modelRef
 	tab.effort = &effort
 	tab.Label = newCtrl.Label()
 	tab.StartupErr = ""
@@ -3623,6 +3625,13 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if ctrl != nil && ctrl.Running() {
 		return fmt.Errorf("finish or cancel the current turn before changing token mode")
 	}
+	modelRef, fallback, err := a.resolvedModelForTab(tab)
+	if err != nil {
+		return err
+	}
+	if fallback && strings.TrimSpace(tab.model) != "" {
+		a.noticeForTab(tab.ID, fmt.Sprintf("model %q is no longer available; switched to %s", tab.model, modelRef))
+	}
 
 	var carried []provider.Message
 	prevPath := ""
@@ -3633,7 +3642,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		carried = oldCtrl.History()
 	}
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
-		Model:          tab.model,
+		Model:          modelRef,
 		RequireKey:     false,
 		Sink:           tab.sink,
 		WorkspaceRoot:  tab.WorkspaceRoot,
@@ -3650,6 +3659,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	}
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
+	tab.model = modelRef
 	tab.tokenMode = mode
 	tab.Label = newCtrl.Label()
 	tab.StartupErr = ""
@@ -4177,6 +4187,25 @@ func (a *App) currentProviderEntryForTab(tabID string) (*config.ProviderEntry, e
 		entry.Effort = *effortOverride
 	}
 	return entry, nil
+}
+
+func (a *App) resolvedModelForTab(tab *WorkspaceTab) (string, bool, error) {
+	if tab == nil {
+		return "", false, fmt.Errorf("no active tab")
+	}
+	cfg, err := config.LoadForRoot(tab.WorkspaceRoot)
+	if err != nil {
+		return "", false, err
+	}
+	ref := strings.TrimSpace(tab.model)
+	if ref == "" {
+		ref = cfg.DefaultModel
+	}
+	resolved, fallback, ok := cfg.ResolveModelWithFallback(ref)
+	if !ok {
+		return "", false, fmt.Errorf("unknown model %q", ref)
+	}
+	return resolved, fallback, nil
 }
 
 func (a *App) withActiveWorkspace(fn func() (string, error)) (string, error) {
