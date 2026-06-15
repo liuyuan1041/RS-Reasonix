@@ -21561,13 +21561,15 @@ a[href] {
 /* ── GeoStatusDots — env icons + status badge ────────── */
 
 .geodots {
-  position: fixed;
-  bottom: 12px;
-  right: 24px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  z-index: var(--z-inline-sticky);
+  margin-right: 8px;
+}
+
+.statusbar__group--geo .geodots {
+  margin-right: 0;
+  gap: 6px;
 }
 
 .geodot {
@@ -21591,19 +21593,29 @@ a[href] {
 }
 
 .geodot__icon {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   display: block;
+}
+
+.statusbar__group--geo .geodot__icon {
+  width: 13px;
+  height: 13px;
 }
 
 .geodot__badge {
   position: absolute;
-  top: 1px;
-  right: 1px;
-  width: 5px;
-  height: 5px;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   border: 1px solid var(--bg);
+}
+
+.statusbar__group--geo .geodot__badge {
+  top: -1px;
+  right: -1px;
 }
 
 .geodot__backdrop {
