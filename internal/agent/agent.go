@@ -164,6 +164,7 @@ type Agent struct {
 	executorHandoffGuard bool
 	temperature          float64
 	pricing              *provider.Pricing
+	usageSource          string
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
 	// sink receives the turn's typed event stream (reasoning/text deltas, tool
@@ -470,6 +471,7 @@ type Options struct {
 	MaxStepsKey string
 	Temperature float64
 	Pricing     *provider.Pricing // optional, for per-turn cost display
+	UsageSource string            // optional billable usage source; default executor
 
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
@@ -538,6 +540,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxStepsKey:       maxStepsKey,
 		temperature:       opts.Temperature,
 		pricing:           opts.Pricing,
+		usageSource:       usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		sink:              sink,
 		gate:              gate,
 		hooks:             hooks,
@@ -553,6 +556,14 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
+}
+
+func usageSourceOrDefault(source, fallback string) string {
+	source = strings.TrimSpace(source)
+	if source != "" {
+		return source
+	}
+	return fallback
 }
 
 // Run appends the user input and drives the tool loop until the model returns a
@@ -624,6 +635,7 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 		a.haveLastPrefixShape = true
 		if usage != nil && usage.TotalTokens > 0 {
 			a.sink.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: a.pricing,
+				UsageSource:      a.usageSource,
 				CacheDiagnostics: &cacheDiagnostics,
 				SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
 		}

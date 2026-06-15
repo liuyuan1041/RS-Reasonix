@@ -52,6 +52,15 @@ type WorkspaceTab struct {
 	saving    bool
 	saveAgain bool
 
+	// closing is set under saveMu when the tab is being torn down. Once set,
+	// tabSnapshotLoop stops taking new snapshot work and CloseTab waits on
+	// saveCond until any in-flight snapshot finishes - so no background
+	// snapshot can write a session file back to disk after CloseTab returns.
+	// Without this, deleting a just-closed session races that write and the
+	// session "resurrects" (#4384).
+	closing  bool
+	saveCond *sync.Cond
+
 	// readTelemetry tracks files read during this tab's session.
 	readTelemetry  []readFileRecord
 	usageTelemetry sessionUsageStats
@@ -86,6 +95,25 @@ type readFileRecord struct {
 }
 
 type sessionUsageStats struct {
+	PromptTokens     int                         `json:"promptTokens"`
+	CompletionTokens int                         `json:"completionTokens"`
+	TotalTokens      int                         `json:"totalTokens"`
+	ReasoningTokens  int                         `json:"reasoningTokens"`
+	CacheHitTokens   int                         `json:"cacheHitTokens"`
+	CacheMissTokens  int                         `json:"cacheMissTokens"`
+	RequestCount     int                         `json:"requestCount"`
+	ElapsedMs        int64                       `json:"elapsedMs"`
+	SessionCost      float64                     `json:"sessionCost,omitempty"`
+	SessionCurrency  string                      `json:"sessionCurrency,omitempty"`
+	SessionCostUsd   float64                     `json:"sessionCostUsd,omitempty"`
+	Sources          map[string]usageSourceStats `json:"sources,omitempty"`
+
+	activeTurnStartedAt            int64
+	executorSessionCacheHitTokens  int
+	executorSessionCacheMissTokens int
+}
+
+type usageSourceStats struct {
 	PromptTokens     int     `json:"promptTokens"`
 	CompletionTokens int     `json:"completionTokens"`
 	TotalTokens      int     `json:"totalTokens"`
@@ -93,12 +121,9 @@ type sessionUsageStats struct {
 	CacheHitTokens   int     `json:"cacheHitTokens"`
 	CacheMissTokens  int     `json:"cacheMissTokens"`
 	RequestCount     int     `json:"requestCount"`
-	ElapsedMs        int64   `json:"elapsedMs"`
 	SessionCost      float64 `json:"sessionCost,omitempty"`
 	SessionCurrency  string  `json:"sessionCurrency,omitempty"`
 	SessionCostUsd   float64 `json:"sessionCostUsd,omitempty"`
-
-	activeTurnStartedAt int64
 }
 
 type tabTelemetrySnapshot struct {
@@ -377,25 +402,51 @@ func (t *WorkspaceTab) recordUsage(e event.Event) {
 		return
 	}
 	u := e.Usage
+	source := strings.TrimSpace(e.UsageSource)
+	if source == "" {
+		source = event.UsageSourceExecutor
+	}
 	t.telemMu.Lock()
 	t.usageTelemetry.PromptTokens += u.PromptTokens
 	t.usageTelemetry.CompletionTokens += u.CompletionTokens
 	t.usageTelemetry.TotalTokens += u.TotalTokens
 	t.usageTelemetry.ReasoningTokens += u.ReasoningTokens
-	if e.SessionHit+e.SessionMiss > 0 {
-		t.usageTelemetry.CacheHitTokens = e.SessionHit
-		t.usageTelemetry.CacheMissTokens = e.SessionMiss
+	if source == event.UsageSourceExecutor && e.SessionHit+e.SessionMiss > 0 {
+		if e.SessionHit < t.usageTelemetry.executorSessionCacheHitTokens || e.SessionMiss < t.usageTelemetry.executorSessionCacheMissTokens {
+			t.usageTelemetry.CacheHitTokens += u.CacheHitTokens
+			t.usageTelemetry.CacheMissTokens += u.CacheMissTokens
+		} else {
+			t.usageTelemetry.CacheHitTokens += e.SessionHit - t.usageTelemetry.executorSessionCacheHitTokens
+			t.usageTelemetry.CacheMissTokens += e.SessionMiss - t.usageTelemetry.executorSessionCacheMissTokens
+		}
+		t.usageTelemetry.executorSessionCacheHitTokens = e.SessionHit
+		t.usageTelemetry.executorSessionCacheMissTokens = e.SessionMiss
 	} else {
 		t.usageTelemetry.CacheHitTokens += u.CacheHitTokens
 		t.usageTelemetry.CacheMissTokens += u.CacheMissTokens
 	}
 	t.usageTelemetry.RequestCount++
+	if t.usageTelemetry.Sources == nil {
+		t.usageTelemetry.Sources = map[string]usageSourceStats{}
+	}
+	src := t.usageTelemetry.Sources[source]
+	src.PromptTokens += u.PromptTokens
+	src.CompletionTokens += u.CompletionTokens
+	src.TotalTokens += u.TotalTokens
+	src.ReasoningTokens += u.ReasoningTokens
+	src.CacheHitTokens += u.CacheHitTokens
+	src.CacheMissTokens += u.CacheMissTokens
+	src.RequestCount++
 	if e.Pricing != nil {
 		cost := e.Pricing.Cost(u)
 		t.usageTelemetry.SessionCost += cost
 		t.usageTelemetry.SessionCostUsd = t.usageTelemetry.SessionCost
 		t.usageTelemetry.SessionCurrency = e.Pricing.Symbol()
+		src.SessionCost += cost
+		src.SessionCostUsd = src.SessionCost
+		src.SessionCurrency = e.Pricing.Symbol()
 	}
+	t.usageTelemetry.Sources[source] = src
 	t.telemMu.Unlock()
 }
 
@@ -411,7 +462,15 @@ func (t *WorkspaceTab) telemetrySnapshot() tabTelemetrySnapshot {
 			usage.ElapsedMs += now - started
 		}
 	}
+	if len(t.usageTelemetry.Sources) > 0 {
+		usage.Sources = make(map[string]usageSourceStats, len(t.usageTelemetry.Sources))
+		for source, stats := range t.usageTelemetry.Sources {
+			usage.Sources[source] = stats
+		}
+	}
 	usage.activeTurnStartedAt = 0
+	usage.executorSessionCacheHitTokens = 0
+	usage.executorSessionCacheMissTokens = 0
 	return tabTelemetrySnapshot{Version: 2, ReadFiles: records, Usage: usage}
 }
 
@@ -1280,10 +1339,22 @@ func (a *App) CloseTab(tabID string) error {
 
 	// Tear down outside the lock.
 	if tab.Ctrl != nil {
+		// Final snapshot while the controller still owns its session path.
+		// a.mu stays free during the disk write; the two resurrection
+		// vectors are neutralized below before DeleteSession can see the
+		// tab as gone:
+		//   (1) clear the controller's session path so any later Snapshot
+		//       (including the autosave loop) is a no-op;
+		//   (2) drain any in-flight tabSnapshotLoop before returning, so no
+		//       background write can land after the file is trashed.
 		_ = tab.Ctrl.Snapshot()
 		if tab.hasActiveRuntimeWork() && a.detachSessionRuntime(tab) {
+			// Detached runtimes keep running and must keep saving: do not
+			// clear the path or drain for them.
 			return nil
 		}
+		tab.Ctrl.SetSessionPath("") // future snapshots become no-ops
+		a.quiesceTabAutosave(tab)   // wait for any in-flight snapshot to finish
 		tab.Ctrl.Cancel()
 		tab.Ctrl.Close()
 	}
@@ -1551,14 +1622,43 @@ func (a *App) scheduleTabSnapshot(tabID string) {
 		return
 	}
 	tab.saveMu.Lock()
+	defer tab.saveMu.Unlock()
+	if tab.closing {
+		// Tab is being torn down: don't start new snapshot work that could
+		// race DeleteSession and resurrect a trashed session file (#4384).
+		return
+	}
 	if tab.saving {
 		tab.saveAgain = true
-		tab.saveMu.Unlock()
 		return
 	}
 	tab.saving = true
-	tab.saveMu.Unlock()
 	go a.tabSnapshotLoop(tab)
+}
+
+// quiesceTabAutosave marks the tab as closing and blocks until any in-flight
+// tabSnapshotLoop has finished its current (and final) write. After it returns,
+// no background goroutine can call Snapshot on this tab's controller again, so
+// a subsequent DeleteSession cannot race a late write. Safe to call after the
+// controller's session path has been cleared: the loop's Snapshot becomes a
+// no-op and it exits on its next iteration.
+func (a *App) quiesceTabAutosave(tab *WorkspaceTab) {
+	if tab == nil {
+		return
+	}
+	tab.saveMu.Lock()
+	if tab.saveCond == nil {
+		// saveCond is lazily initialized on first snapshot; if it was never
+		// set there is no loop to wait for.
+		tab.closing = true
+		tab.saveMu.Unlock()
+		return
+	}
+	tab.closing = true
+	for tab.saving {
+		tab.saveCond.Wait()
+	}
+	tab.saveMu.Unlock()
 }
 
 func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
@@ -1575,12 +1675,23 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 			}
 		}
 		tab.saveMu.Lock()
+		if tab.saveCond == nil {
+			tab.saveCond = sync.NewCond(&tab.saveMu)
+		}
+		if tab.closing {
+			// Tab is being torn down: stop without picking up saveAgain work.
+			tab.saving = false
+			tab.saveCond.Broadcast()
+			tab.saveMu.Unlock()
+			return
+		}
 		if tab.saveAgain {
 			tab.saveAgain = false
 			tab.saveMu.Unlock()
 			continue
 		}
 		tab.saving = false
+		tab.saveCond.Broadcast()
 		tab.saveMu.Unlock()
 		return
 	}
@@ -3589,22 +3700,23 @@ func unixMilliOrZero(t time.Time) int64 {
 
 // ContextPanelInfo is the right-side panel's data for one tab.
 type ContextPanelInfo struct {
-	UsedTokens       int               `json:"usedTokens"`
-	WindowTokens     int               `json:"windowTokens"`
-	PromptTokens     int               `json:"promptTokens"`
-	CompletionTokens int               `json:"completionTokens"`
-	TotalTokens      int               `json:"totalTokens"`
-	ReasoningTokens  int               `json:"reasoningTokens"`
-	CacheHitTokens   int               `json:"cacheHitTokens"`
-	CacheMissTokens  int               `json:"cacheMissTokens"`
-	RequestCount     int               `json:"requestCount"`
-	ElapsedMs        int64             `json:"elapsedMs"`
-	SessionCost      float64           `json:"sessionCost"`
-	SessionCurrency  string            `json:"sessionCurrency,omitempty"`
-	SessionCostUsd   float64           `json:"sessionCostUsd,omitempty"`
-	Mock             bool              `json:"mock,omitempty"`
-	ReadFiles        []readFileRecord  `json:"readFiles"`
-	ChangedFiles     []ChangedFileInfo `json:"changedFiles"`
+	UsedTokens       int                         `json:"usedTokens"`
+	WindowTokens     int                         `json:"windowTokens"`
+	PromptTokens     int                         `json:"promptTokens"`
+	CompletionTokens int                         `json:"completionTokens"`
+	TotalTokens      int                         `json:"totalTokens"`
+	ReasoningTokens  int                         `json:"reasoningTokens"`
+	CacheHitTokens   int                         `json:"cacheHitTokens"`
+	CacheMissTokens  int                         `json:"cacheMissTokens"`
+	RequestCount     int                         `json:"requestCount"`
+	ElapsedMs        int64                       `json:"elapsedMs"`
+	SessionCost      float64                     `json:"sessionCost"`
+	SessionCurrency  string                      `json:"sessionCurrency,omitempty"`
+	SessionCostUsd   float64                     `json:"sessionCostUsd,omitempty"`
+	Sources          map[string]usageSourceStats `json:"sources,omitempty"`
+	Mock             bool                        `json:"mock,omitempty"`
+	ReadFiles        []readFileRecord            `json:"readFiles"`
+	ChangedFiles     []ChangedFileInfo           `json:"changedFiles"`
 }
 
 type ChangedFileInfo struct {
@@ -3659,6 +3771,7 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 	info.SessionCost = usage.SessionCost
 	info.SessionCurrency = usage.SessionCurrency
 	info.SessionCostUsd = usage.SessionCostUsd
+	info.Sources = usage.Sources
 
 	// Gather workspace changes for this tab's root.
 	if ctrl != nil && tab.WorkspaceRoot != "" {
