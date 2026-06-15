@@ -2,7 +2,7 @@ import { Minus, PanelLeft, PanelRight, Search, Square, X } from "lucide-react";
 import { TabBar } from "./TabBar";
 import type { TabMeta } from "../lib/types";
 import { useT } from "../lib/i18n";
-import { GeoStatusDots } from "./geo/GeoStatusDots";
+
 
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -179,7 +179,6 @@ export function AppChrome({
         </>
       )}
 
-      <GeoStatusDots />
       {!workspacePanelMaximized && (
         <button
           className={[

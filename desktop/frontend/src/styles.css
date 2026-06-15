@@ -21609,6 +21609,22 @@ a[href] {
   z-index: var(--z-local-backdrop);
 }
 
+/* statusbar overrides */
+.statusbar__group--geo .geodots {
+  margin-right: 0;
+  gap: 6px;
+}
+.statusbar__group--geo .geodot__icon {
+  width: 13px;
+  height: 13px;
+}
+.statusbar__group--geo .geodot__badge {
+  top: -1px;
+  right: -1px;
+  width: 4px;
+  height: 4px;
+}
+
 .geodot__popover {
   position: absolute;
   top: 100%;
