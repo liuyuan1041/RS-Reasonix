@@ -21558,13 +21558,16 @@ a[href] {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── GeoStatusDots (titlebar branded icons + badge) ────────── */
+/* ── GeoStatusDots — env icons + status badge ────────── */
 
 .geodots {
+  position: fixed;
+  bottom: 12px;
+  right: 24px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-right: 8px;
+  z-index: var(--z-inline-sticky);
 }
 
 .geodot {

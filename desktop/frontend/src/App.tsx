@@ -41,6 +41,7 @@ import { AskCard } from "./components/AskCard";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { StatusBar } from "./components/StatusBar";
+import { GeoStatusDots } from "./components/geo/GeoStatusDots";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { SettingsPanel, type SettingsInitialFocus } from "./components/SettingsPanel";
@@ -2980,6 +2981,7 @@ export default function App() {
             />
           </footer>
           )}
+          <GeoStatusDots />
           </>
         </section>
 

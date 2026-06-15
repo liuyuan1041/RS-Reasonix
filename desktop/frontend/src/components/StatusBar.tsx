@@ -6,6 +6,8 @@ import { formatMoney } from "../lib/money";
 import { normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
 import { type BalanceInfo, type CollaborationMode, type ContextInfo, type JobView, type ToolApprovalMode, type WireUsage } from "../lib/types";
 
+
+
 type StatusBarLabelStyle = "icon" | "text";
 
 // JobsChip is the status-bar background-jobs indicator: a count that opens an
