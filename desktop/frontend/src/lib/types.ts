@@ -43,6 +43,9 @@ export interface WireTool {
   durationMs?: number;
   partial?: boolean; // an early dispatch (name only) — a full one with args follows
   parentId?: string; // set on a sub-agent's calls — the parent `task` call's id
+  diff?: string;
+  added?: number;
+  removed?: number;
   profile?: WireProfile; // subagent model/effort resolved for this call
 }
 
@@ -125,6 +128,8 @@ export interface TabMeta {
   scope: string;
   workspaceRoot: string;
   workspaceName: string;
+  workspacePath?: string;
+  gitBranch?: string;
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
@@ -134,6 +139,10 @@ export interface TabMeta {
   label: string;
   ready: boolean;
   running: boolean;
+  pendingPrompt?: boolean;
+  backgroundJobs?: number;
+  cancelRequested?: boolean;
+  cancellable?: boolean;
   mode: Mode;
   collaborationMode?: CollaborationMode;
   toolApprovalMode?: ToolApprovalMode;
@@ -248,6 +257,9 @@ export interface HistoryToolCall {
   arguments: string;
   subject?: string;
   summary?: string;
+  diff?: string;
+  added?: number;
+  removed?: number;
   argumentsArchived?: boolean;
 }
 
@@ -330,6 +342,10 @@ export interface Meta {
   startupErr?: string;
   eventChannel: string;
   cwd: string;
+  workspaceRoot?: string;
+  workspaceName?: string;
+  workspacePath?: string;
+  gitBranch?: string;
   autoApproveTools?: boolean;
   bypass?: boolean; // legacy JSON key for YOLO/full-access tool auto-approval
   collaborationMode?: CollaborationMode;
@@ -635,7 +651,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "memory" | "hooks" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
 
 // Settings panel payloads (desktop/settings_app.go).
 export interface ProviderView {
@@ -645,6 +661,8 @@ export interface ProviderView {
   kind: string;
   baseUrl: string;
   models: string[];
+  visionModels: string[]; // subset of models that accepts image input
+  visionModelsConfigured: boolean; // true when an empty list is an explicit choice
   modelsUrl: string; // optional override for model discovery; empty derives from baseUrl
   default: string;
   apiKeyEnv: string;

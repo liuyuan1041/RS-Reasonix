@@ -32,6 +32,8 @@ type ProviderView struct {
 	Kind              string   `json:"kind"`
 	BaseURL           string   `json:"baseUrl"`
 	Models            []string `json:"models"`
+	VisionModels      []string `json:"visionModels"`
+	VisionModelsSet   bool     `json:"visionModelsConfigured"`
 	ModelsURL         string   `json:"modelsUrl"`
 	Default           string   `json:"default"`
 	APIKeyEnv         string   `json:"apiKeyEnv"`
@@ -270,9 +272,15 @@ func removeProviderAccess(c *config.Config, names ...string) {
 }
 
 func providerViewFromEntry(p config.ProviderEntry, builtIn, added bool) ProviderView {
+	models := p.ChatModelList()
+	visionModels := p.VisionModels
+	visionModelsSet := p.Vision || p.VisionModels != nil
+	if p.Vision {
+		visionModels = models
+	}
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL,
-		Models: nonNil(p.ChatModelList()), ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
+		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
 		KeySet:            p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) != "",
 		BalanceURL:        p.BalanceURL,
@@ -283,10 +291,10 @@ func providerViewFromEntry(p config.ProviderEntry, builtIn, added bool) Provider
 	}
 }
 
-func officialProviderViews(added map[string]bool) []ProviderView {
+func officialProviderViews(added map[string]bool, pricingLanguage string) []ProviderView {
 	var out []ProviderView
 	for _, kind := range []string{"deepseek", "mimo-api", "mimo-token-plan"} {
-		entries, _, err := officialProviderTemplate(kind)
+		entries, _, err := officialProviderTemplate(kind, pricingLanguage)
 		if err != nil {
 			continue
 		}
@@ -321,7 +329,7 @@ func (a *App) Settings() SettingsView {
 	if err != nil {
 		return SettingsView{
 			Providers:         []ProviderView{},
-			OfficialProviders: officialProviderViews(map[string]bool{}),
+			OfficialProviders: officialProviderViews(map[string]bool{}, ""),
 			ProviderKinds:     nonNil(provider.Kinds()),
 			Permissions: PermissionsView{
 				Mode:  "ask",
@@ -334,7 +342,7 @@ func (a *App) Settings() SettingsView {
 			Bot:                botSettingsView(config.BotConfig{}),
 			AutoPlan:           "off",
 			DesktopLayoutStyle: "classic",
-			DesktopTheme:       "light",
+			DesktopTheme:       "auto",
 			DesktopThemeStyle:  "graphite",
 			CloseBehavior:      "background",
 			DisplayMode:        "standard",
@@ -406,7 +414,7 @@ func (a *App) Settings() SettingsView {
 		Bypass:             ctrl != nil && ctrl.AutoApproveTools(),
 	}
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
-	v.OfficialProviders = officialProviderViews(officialProviderAddedSet(cfg))
+	v.OfficialProviders = officialProviderViews(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage())
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		v.Providers = append(v.Providers, providerViewFromEntry(*p, isOfficialBuiltInProvider(*p), added[p.Name]))
@@ -878,7 +886,7 @@ func desktopAutoPlanMode(mode string) string {
 	}
 }
 
-func officialProviderTemplate(kind string) ([]config.ProviderEntry, string, error) {
+func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEntry, string, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "deepseek", "deepseek-official":
 		return []config.ProviderEntry{{
@@ -890,32 +898,42 @@ func officialProviderTemplate(kind string) ([]config.ProviderEntry, string, erro
 			APIKeyEnv:     "DEEPSEEK_API_KEY",
 			BalanceURL:    "https://api.deepseek.com/user/balance",
 			ContextWindow: 1_000_000,
-			Prices: map[string]*provider.Pricing{
-				"deepseek-v4-flash": &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"},
-				"deepseek-v4-pro":   &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"},
-			},
+			Prices:        config.DeepSeekV4PricesForLanguage(pricingLanguage),
 		}}, "DEEPSEEK_API_KEY", nil
 	case "mimo-api", "xiaomi-mimo", "xiaomi_mimo":
+		models := []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"}
 		return []config.ProviderEntry{{
 			Name:          "mimo-api",
 			Kind:          "openai",
 			BaseURL:       "https://api.xiaomimimo.com/v1",
-			Models:        []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"},
+			Models:        models,
+			VisionModels:  []string{"mimo-v2.5", "mimo-v2-omni"},
 			Default:       "mimo-v2.5-pro",
 			APIKeyEnv:     "MIMO_API_KEY",
 			ContextWindow: 1_048_576,
-			NoProxy:       true,
+			Prices: map[string]*provider.Pricing{
+				"mimo-v2.5-pro": &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"},
+				"mimo-v2.5":     &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
+				"mimo-v2-omni":  &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
+			},
+			NoProxy: true,
 		}}, "MIMO_API_KEY", nil
 	case "mimo-token-plan", "xiaomi-mimo-token-plan", "xiaomi_mimo_token_plan":
+		models := []string{"mimo-v2.5-pro", "mimo-v2.5"}
 		return []config.ProviderEntry{{
 			Name:          "mimo-token-plan",
 			Kind:          "openai",
 			BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
-			Models:        []string{"mimo-v2.5-pro", "mimo-v2.5"},
+			Models:        models,
+			VisionModels:  []string{"mimo-v2.5"},
 			Default:       "mimo-v2.5-pro",
 			APIKeyEnv:     "MIMO_API_KEY",
 			ContextWindow: 1_048_576,
-			NoProxy:       true,
+			Prices: map[string]*provider.Pricing{
+				"mimo-v2.5-pro": &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"},
+				"mimo-v2.5":     &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"},
+			},
+			NoProxy: true,
 		}}, "MIMO_API_KEY", nil
 	default:
 		return nil, "", fmt.Errorf("unknown official provider template %q", kind)
@@ -936,6 +954,20 @@ func chatProviderModels(models []string) []string {
 	return out
 }
 
+func providerVisionModels(models, visionModels []string) []string {
+	enabled := map[string]bool{}
+	for _, model := range models {
+		enabled[model] = true
+	}
+	out := make([]string, 0, len(visionModels))
+	for _, model := range chatProviderModels(visionModels) {
+		if enabled[model] {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
 func providerDefaultForModels(currentDefault string, models []string) string {
 	currentDefault = strings.TrimSpace(currentDefault)
 	if currentDefault != "" {
@@ -951,8 +983,9 @@ func providerDefaultForModels(currentDefault string, models []string) string {
 	return ""
 }
 
-// SaveProvider adds or updates a provider. A single model fills `model`; several
-// fill `models` (with `default`). The shared key/endpoint live on the entry.
+// SaveProvider adds or updates a provider. Enabled models are persisted through
+// `models` even when only one model is selected, while `model` remains populated
+// in-memory for validation/back-compat. The shared key/endpoint live on the entry.
 func (a *App) SaveProvider(p ProviderView) error {
 	return a.applyConfigChange(func(c *config.Config) error {
 		e := config.ProviderEntry{Name: p.Name}
@@ -975,13 +1008,21 @@ func (a *App) SaveProvider(p ProviderView) error {
 		e.Model = ""
 		e.Models = nil
 		e.Default = ""
+		e.VisionModels = nil
 		models := chatProviderModels(p.Models)
 		if len(models) > 0 {
 			e.Model = models[0] // also satisfies validateProvider's model requirement
+			e.Models = models
+			if p.VisionModelsSet || len(p.VisionModels) > 0 {
+				e.Vision = false
+				e.VisionModels = providerVisionModels(models, p.VisionModels)
+			}
 			if len(models) > 1 {
-				e.Models = models
 				e.Default = providerDefaultForModels(p.Default, models)
 			}
+		} else {
+			e.Vision = false
+			e.VisionModels = nil
 		}
 		if err := c.UpsertProvider(e); err != nil {
 			return err
@@ -995,7 +1036,11 @@ func (a *App) SaveProvider(p ProviderView) error {
 // Settings > Model > Access list. The runtime default providers still exist
 // independently; this only records the user's explicit access setup.
 func (a *App) AddOfficialProviderAccess(kind, key string) error {
-	entries, keyEnv, err := officialProviderTemplate(kind)
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	entries, keyEnv, err := officialProviderTemplate(kind, cfg.DeepSeekOfficialPricingLanguage())
 	if err != nil {
 		return err
 	}

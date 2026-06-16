@@ -38,6 +38,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	default:
 		scope = RenderScopeFull
 	}
+	if scope == RenderScopeProject {
+		c = projectScopedConfigForRender(c)
+	}
 	defaults := Default()
 	var b strings.Builder
 
@@ -199,6 +202,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
 	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
 	fmt.Fprintf(&b, "compact_force_ratio = %s   # force compacting at this high-water mark\n", formatFloat(c.Agent.CompactForceRatio))
+	if c.Agent.Keep != nil {
+		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
+	} else {
+		b.WriteString("# keep                = [\"errors\"]   # compaction keep policy: errors, user_marked\n")
+	}
+	if c.Agent.RecentKeep > 0 {
+		fmt.Fprintf(&b, "recent_keep         = %d   # minimum recent messages kept verbatim\n", c.Agent.RecentKeep)
+	} else {
+		b.WriteString("# recent_keep         = 2   # minimum recent messages kept verbatim\n")
+	}
 	fmt.Fprintf(&b, "cold_resume_prune   = %v   # elide stale tool results when reopening a session past the provider cache window\n", c.ColdResumePruneEnabled())
 	if c.Agent.PlannerModel != "" {
 		fmt.Fprintf(&b, "planner_model = %q   # low-frequency planner (two-model collaboration)\n", c.Agent.PlannerModel)
@@ -268,6 +281,15 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.Effort != "" {
 				fmt.Fprintf(&b, "effort      = %q\n", p.Effort)
 			}
+			if p.Vision {
+				b.WriteString("vision      = true   # provider accepts image input for all listed models\n")
+			}
+			if p.VisionModels != nil {
+				fmt.Fprintf(&b, "vision_models = %s   # models in this provider that accept image input\n", renderStringArray(p.VisionModels))
+			}
+			if p.VisionDetail != "" {
+				fmt.Fprintf(&b, "vision_detail = %q   # openai image detail hint: low|high; empty = auto\n", p.VisionDetail)
+			}
 			if p.ReasoningProtocol != "" {
 				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)
 			}
@@ -298,6 +320,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("]\n")
 	}
 	fmt.Fprintf(&b, "bash_timeout_seconds = %d   # foreground safety cap; set 0 for no tool-local cap\n\n", c.BashTimeoutSeconds())
+
+	b.WriteString("[tools.background_jobs]\n")
+	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # warn once per background job after this many quiet seconds; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
 
 	b.WriteString("[codegraph]\n")
 	fmt.Fprintf(&b, "enabled      = %v   # built-in MCP server; off by default for first-run sessions\n", c.Codegraph.Enabled)
@@ -570,6 +595,21 @@ func shouldRenderProviders(c, defaults *Config, scope RenderScope) bool {
 		return true
 	}
 	return !reflect.DeepEqual(c.Providers, defaults.Providers)
+}
+
+func projectScopedConfigForRender(c *Config) *Config {
+	if c == nil || len(c.providerSources) == 0 {
+		return c
+	}
+	cp := *c
+	cp.Providers = make([]ProviderEntry, 0, len(c.Providers))
+	for _, p := range c.Providers {
+		if c.providerSources[providerMergeKey(p)] == providerSourceUser {
+			continue
+		}
+		cp.Providers = append(cp.Providers, p)
+	}
+	return &cp
 }
 
 func shouldRenderBot(c, defaults *Config, scope RenderScope) bool {

@@ -60,7 +60,16 @@ type Config struct {
 	Statusline        StatuslineConfig        `toml:"statusline"`
 	LSP               LSPConfig               `toml:"lsp"`
 	Bot               BotConfig               `toml:"bot"`
+
+	providerSources map[string]providerSourceScope
 }
+
+type providerSourceScope string
+
+const (
+	providerSourceUser    providerSourceScope = "user"
+	providerSourceProject providerSourceScope = "project"
+)
 
 // UIConfig controls CLI presentation-only settings. Desktop appearance is kept in
 // DesktopConfig so desktop preferences cannot alter terminal output or prompts.
@@ -78,7 +87,7 @@ type UIConfig struct {
 type DesktopConfig struct {
 	Language       string   `toml:"language"`         // auto|en|zh; empty/auto = browser/OS auto-detect
 	LayoutStyle    string   `toml:"layout_style"`     // classic|workbench; desktop layout style
-	Theme          string   `toml:"theme"`            // auto|dark|light; empty resolves to dark
+	Theme          string   `toml:"theme"`            // auto|dark|light; empty resolves to auto
 	ThemeStyle     string   `toml:"theme_style"`      // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
 	CloseBehavior  string   `toml:"close_behavior"`   // quit|background; desktop window close behavior
 	DisplayMode    string   `toml:"display_mode"`     // standard|compact (legacy "minimal" maps to compact); transcript display mode
@@ -170,8 +179,8 @@ func (c *Config) DesktopLanguage() string {
 	}
 }
 
-// DesktopTheme normalizes desktop.theme. New desktop users default to the light
-// graphite product look; an explicit auto/light/dark is preserved.
+// DesktopTheme normalizes desktop.theme. New desktop users default to the OS
+// automatic graphite product look; an explicit auto/light/dark is preserved.
 func (c *Config) DesktopTheme() string {
 	switch strings.ToLower(strings.TrimSpace(c.Desktop.Theme)) {
 	case "auto":
@@ -181,7 +190,7 @@ func (c *Config) DesktopTheme() string {
 	case "dark":
 		return "dark"
 	default:
-		return "light"
+		return "auto"
 	}
 }
 
@@ -868,6 +877,11 @@ type AgentConfig struct {
 	SoftCompactRatio  float64 `toml:"soft_compact_ratio"`
 	CompactRatio      float64 `toml:"compact_ratio"`
 	CompactForceRatio float64 `toml:"compact_force_ratio"`
+	// Keep controls which compactable messages stay verbatim beyond the current
+	// user-fact/digest floor and recent tail. Empty uses the conservative default
+	// of keeping error tool results.
+	Keep       []string `toml:"keep"`
+	RecentKeep int      `toml:"recent_keep"`
 	// ColdResumePrune elides stale tool results when a session reopens past the
 	// provider cache window. nil = default enabled.
 	ColdResumePrune *bool `toml:"cold_resume_prune"`
@@ -903,6 +917,10 @@ type ProviderEntry struct {
 	// and image tokens are heavy — gating keeps text-only flows cheap (the prompt
 	// prefix is byte-identical with no image, so the cache is unaffected either way).
 	Vision bool `toml:"vision"`
+	// VisionModels narrows image input support to specific models in a multi-model
+	// provider. This lets one provider expose both text-only and multimodal chat
+	// models without enabling image payloads for every model.
+	VisionModels []string `toml:"vision_models"`
 	// VisionDetail sets the openai image_url detail hint (low|high); empty = auto
 	// (the field is omitted). "low" caps an image to a fixed ~85 tokens for cheap
 	// coarse reads; ignored by providers without the knob (e.g. anthropic).
@@ -1058,13 +1076,18 @@ func clonePricing(p *provider.Pricing) *provider.Pricing {
 
 // ToolsConfig selects which built-in tools are enabled. Empty means all of them.
 type ToolsConfig struct {
-	Enabled            []string     `toml:"enabled"`
-	BashTimeoutSeconds *int         `toml:"bash_timeout_seconds"`
-	Search             SearchConfig `toml:"search"`
-	Shell              ShellConfig  `toml:"shell"`
+	Enabled            []string             `toml:"enabled"`
+	BashTimeoutSeconds *int                 `toml:"bash_timeout_seconds"`
+	BackgroundJobs     BackgroundJobsConfig `toml:"background_jobs"`
+	Search             SearchConfig         `toml:"search"`
+	Shell              ShellConfig          `toml:"shell"`
 }
 
-const defaultBashTimeoutSeconds = 120
+const (
+	defaultBashTimeoutSeconds             = 120
+	defaultBackgroundJobStalledWarningSec = 900
+	maxBackgroundJobStalledWarningSec     = 86400
+)
 
 // BashTimeoutSeconds returns the foreground bash timeout in seconds. An omitted
 // config keeps the historical 120s safety cap, explicit 0 disables the
@@ -1075,6 +1098,25 @@ func (c *Config) BashTimeoutSeconds() int {
 		return defaultBashTimeoutSeconds
 	}
 	return *c.Tools.BashTimeoutSeconds
+}
+
+// BackgroundJobsConfig tunes parent-created background jobs.
+type BackgroundJobsConfig struct {
+	StalledWarningSeconds *int `toml:"stalled_warning_seconds"`
+}
+
+// BackgroundJobStalledWarningSeconds returns the stalled warning threshold in
+// seconds. Omitted/negative values keep the default, explicit 0 disables the
+// notice, and oversized values clamp to one day so a typo cannot become
+// effectively invisible.
+func (c *Config) BackgroundJobStalledWarningSeconds() int {
+	if c.Tools.BackgroundJobs.StalledWarningSeconds == nil || *c.Tools.BackgroundJobs.StalledWarningSeconds < 0 {
+		return defaultBackgroundJobStalledWarningSec
+	}
+	if *c.Tools.BackgroundJobs.StalledWarningSeconds > maxBackgroundJobStalledWarningSec {
+		return maxBackgroundJobStalledWarningSec
+	}
+	return *c.Tools.BackgroundJobs.StalledWarningSeconds
 }
 
 // SearchConfig tunes the grep tool's engine. Engine is "auto" (default — use
@@ -1202,7 +1244,7 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration (DeepSeek + MiMo presets).
 func Default() *Config {
 	return &Config{
-		ConfigVersion: 2,
+		ConfigVersion: 3,
 		DefaultModel:  "deepseek-flash",
 		UI:            UIConfig{Theme: "auto"},
 		Notifications: NotificationsConfig{
@@ -1261,18 +1303,18 @@ func Default() *Config {
 		Providers: []ProviderEntry{
 			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
 			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPrice()},
-			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}, NoProxy: true},
-			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}, NoProxy: true},
+			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPrice(), NoProxy: true},
+			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25Price(), NoProxy: true},
 		},
 	}
 }
 
 func deepSeekV4FlashPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}
 }
 
 func deepSeekV4ProPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}
 }
 
 func deepSeekV4Prices() map[string]*provider.Pricing {
@@ -1280,6 +1322,231 @@ func deepSeekV4Prices() map[string]*provider.Pricing {
 		"deepseek-v4-flash": deepSeekV4FlashPrice(),
 		"deepseek-v4-pro":   deepSeekV4ProPrice(),
 	}
+}
+
+func deepSeekV4FlashPriceUSD() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
+}
+
+func deepSeekV4ProPriceUSD() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"}
+}
+
+func deepSeekV4PricesUSD() map[string]*provider.Pricing {
+	return map[string]*provider.Pricing{
+		"deepseek-v4-flash": deepSeekV4FlashPriceUSD(),
+		"deepseek-v4-pro":   deepSeekV4ProPriceUSD(),
+	}
+}
+
+// DeepSeekV4PricesForLanguage keeps the settings/template call site stable while
+// official DeepSeek defaults move to RMB. Persisted prices still win; this is
+// only used for templates and missing-default backfills.
+func DeepSeekV4PricesForLanguage(lang string) map[string]*provider.Pricing {
+	_ = lang
+	return deepSeekV4Prices()
+}
+
+func deepSeekV4PricesForConfig(c *Config) map[string]*provider.Pricing {
+	_ = c
+	return deepSeekV4Prices()
+}
+
+func deepSeekV4PriceForModel(lang, model string) *provider.Pricing {
+	_ = lang
+	return clonePricing(deepSeekV4Prices()[strings.TrimSpace(model)])
+}
+
+// DeepSeekOfficialPricingLanguage is retained for settings/template compatibility.
+// Official DeepSeek providers now seed RMB prices by default; explicit user
+// prices in config still override these defaults.
+func (c *Config) DeepSeekOfficialPricingLanguage() string {
+	_ = c
+	return "zh"
+}
+
+// ApplyDeepSeekOfficialDefaultPricing refreshes built-in/official DeepSeek
+// prices that still match known official defaults. Custom user prices are left
+// untouched.
+func (c *Config) ApplyDeepSeekOfficialDefaultPricing() {
+	applyDeepSeekOfficialDefaultPricing(c)
+}
+
+func applyDeepSeekOfficialDefaultPricing(c *Config) {
+	if c == nil {
+		return
+	}
+	lang := c.DeepSeekOfficialPricingLanguage()
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if officialProviderKind(p) != "deepseek" {
+			continue
+		}
+		if isKnownDeepSeekOfficialPricing(p.Model, p.Price) {
+			p.Price = deepSeekV4PriceForModel(lang, p.Model)
+		}
+		for model, price := range p.Prices {
+			if isKnownDeepSeekOfficialPricing(model, price) {
+				p.Prices[model] = deepSeekV4PriceForModel(lang, model)
+			}
+		}
+	}
+}
+
+func mimoV25ProPrice() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}
+}
+
+func mimoV25Price() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}
+}
+
+func mimoV2FlashPrice() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.07, Input: 0.70, Output: 2.10, Currency: "¥"}
+}
+
+func mimoDomesticPrices(models []string) map[string]*provider.Pricing {
+	prices := map[string]*provider.Pricing{}
+	for _, model := range models {
+		switch strings.TrimSpace(model) {
+		case "mimo-v2.5-pro", "mimo-v2-pro":
+			prices[model] = mimoV25ProPrice()
+		case "mimo-v2.5", "mimo-v2-omni":
+			prices[model] = mimoV25Price()
+		case "mimo-v2-flash":
+			prices[model] = mimoV2FlashPrice()
+		}
+	}
+	return prices
+}
+
+func backfillMimoDomesticPrices(e *ProviderEntry) {
+	if e == nil {
+		return
+	}
+	defaults := mimoDomesticPrices(e.ModelList())
+	if len(defaults) == 0 {
+		return
+	}
+	if e.Prices == nil {
+		e.Prices = map[string]*provider.Pricing{}
+	}
+	for model, price := range defaults {
+		if e.Prices[model] == nil {
+			e.Prices[model] = clonePricing(price)
+		}
+	}
+}
+
+// ResetOfficialProviderPricingOnUpgrade resets official DeepSeek/MiMo prices to
+// the current built-in RMB defaults once for desktop upgrades. It intentionally
+// runs from the desktop app startup path, not every config Load(), so user edits
+// made after the upgrade are preserved.
+func ResetOfficialProviderPricingOnUpgrade(path string) (bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var header Config
+	if _, err := toml.DecodeFile(path, &header); err != nil {
+		return false, fmt.Errorf("config %s: %w", path, err)
+	}
+	if header.ConfigVersion >= Default().ConfigVersion {
+		return false, nil
+	}
+	cfg := LoadForEdit(path)
+	resetOfficialProviderPricingDefaults(cfg)
+	cfg.ConfigVersion = Default().ConfigVersion
+	if err := cfg.SaveTo(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func resetOfficialProviderPricingDefaults(c *Config) {
+	if c == nil {
+		return
+	}
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		switch {
+		case officialProviderKind(p) == "deepseek":
+			resetDeepSeekOfficialPricing(p)
+		case isOfficialMimoAPIProvider(p), isOfficialMimoTokenPlanProvider(p):
+			resetMimoOfficialPricing(p)
+		}
+	}
+}
+
+func resetDeepSeekOfficialPricing(p *ProviderEntry) {
+	if p == nil {
+		return
+	}
+	defaults := deepSeekV4Prices()
+	p.Price = nil
+	if strings.TrimSpace(p.Model) != "" && len(p.Models) == 0 {
+		if price := defaults[strings.TrimSpace(p.Model)]; price != nil {
+			p.Price = clonePricing(price)
+			p.Prices = nil
+			return
+		}
+	}
+	if p.Prices == nil {
+		p.Prices = map[string]*provider.Pricing{}
+	}
+	for model, price := range defaults {
+		if p.HasModel(model) {
+			p.Prices[model] = clonePricing(price)
+		}
+	}
+}
+
+func resetMimoOfficialPricing(p *ProviderEntry) {
+	if p == nil {
+		return
+	}
+	defaults := mimoDomesticPrices(p.ModelList())
+	if len(defaults) == 0 {
+		return
+	}
+	p.Price = nil
+	if strings.TrimSpace(p.Model) != "" && len(p.Models) == 0 {
+		if price := defaults[strings.TrimSpace(p.Model)]; price != nil {
+			p.Price = clonePricing(price)
+			p.Prices = nil
+			return
+		}
+	}
+	p.Prices = map[string]*provider.Pricing{}
+	for model, price := range defaults {
+		p.Prices[model] = clonePricing(price)
+	}
+}
+
+func isKnownDeepSeekOfficialPricing(model string, price *provider.Pricing) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || price == nil {
+		return false
+	}
+	for _, prices := range []map[string]*provider.Pricing{deepSeekV4Prices(), deepSeekV4PricesUSD()} {
+		if samePricing(price, prices[model]) {
+			return true
+		}
+	}
+	return false
+}
+
+func samePricing(a, b *provider.Pricing) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.CacheHit == b.CacheHit && a.Input == b.Input && a.Output == b.Output && a.Currency == b.Currency
 }
 
 // Load builds the configuration: defaults, then user config, then project
@@ -1330,6 +1597,17 @@ func LoadForRoot(root string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Plugins = plugins
+	if providers, providerSources, ok, err := mergeTOMLProviders(tomlSources); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.Providers = providers
+		cfg.providerSources = providerSources
+	}
+	if access, ok, err := mergeTOMLProviderAccess(tomlSources); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.Desktop.ProviderAccess = access
+	}
 
 	// Claude Code's .mcp.json (project root) is read last and merged into
 	// [[plugins]], so a server configured for Claude works here unchanged.
@@ -1354,9 +1632,10 @@ func LoadForRoot(root string) (*Config, error) {
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
+	applyDeepSeekOfficialDefaultPricing(cfg)
+	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 	backfillDeepSeekPro(cfg)
-	backfillDeepSeekOfficialPrices(cfg)
 	// First run (no config file anywhere): keep CodeGraph off until the user opts
 	// in. An existing config — even one without a [codegraph] section — keeps the
 	// built-in default (on), so an upgrade never silently drops code intelligence.
@@ -1393,9 +1672,15 @@ func backfillDeepSeekPro(c *Config) {
 	if flash == nil {
 		return
 	}
+	// If the user has explicitly curated a model list for the flash provider
+	// (e.g. unchecked pro in Settings), respect that choice and do not backfill.
+	if len(flash.Models) > 0 {
+		return
+	}
 	for _, bp := range Default().Providers {
 		if bp.Name == "deepseek-pro" {
 			bp.APIKeyEnv = flash.APIKeyEnv
+			bp.Price = deepSeekV4PriceForModel(c.DeepSeekOfficialPricingLanguage(), proModel)
 			c.Providers = append(c.Providers, bp)
 			return
 		}
@@ -1406,10 +1691,13 @@ func backfillDeepSeekOfficialPrices(c *Config) {
 	if c == nil {
 		return
 	}
-	defaults := deepSeekV4Prices()
+	defaults := deepSeekV4PricesForConfig(c)
 	for i := range c.Providers {
 		p := &c.Providers[i]
 		if officialProviderKind(p) != "deepseek" {
+			continue
+		}
+		if p.Price != nil {
 			continue
 		}
 		if p.Prices == nil {
@@ -1481,6 +1769,86 @@ func mergeTOMLPlugins(paths []string) ([]PluginEntry, error) {
 	return merged, nil
 }
 
+// mergeTOMLProviders merges [[providers]] across TOML sources by provider name
+// (later source wins). Keep official legacy aliases distinct here: they can carry
+// different default models and effort capabilities, and the later desktop
+// normalization layer handles canonical Settings access.
+func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSourceScope, bool, error) {
+	var merged []ProviderEntry
+	index := map[string]int{}
+	sources := map[string]providerSourceScope{}
+	saw := false
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		var f Config
+		if _, err := toml.DecodeFile(path, &f); err != nil {
+			return nil, nil, false, fmt.Errorf("config %s: %w", path, err)
+		}
+		if len(f.Providers) == 0 {
+			continue
+		}
+		saw = true
+		source := providerSourceForPath(path)
+		for _, p := range f.Providers {
+			normalizeProviderEffortFields(&p)
+			key := providerMergeKey(p)
+			if i, ok := index[key]; ok {
+				merged[i] = p
+			} else {
+				index[key] = len(merged)
+				merged = append(merged, p)
+			}
+			sources[key] = source
+		}
+	}
+	return merged, sources, saw, nil
+}
+
+func providerSourceForPath(path string) providerSourceScope {
+	if isUserConfigPath(path) {
+		return providerSourceUser
+	}
+	return providerSourceProject
+}
+
+func providerMergeKey(p ProviderEntry) string {
+	return strings.TrimSpace(p.Name)
+}
+
+// mergeTOMLProviderAccess merges desktop.provider_access across TOML sources so
+// project desktop settings do not hide account-level providers from the desktop
+// model switcher.
+func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
+	var merged []string
+	seen := map[string]bool{}
+	saw := false
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		var f Config
+		meta, err := toml.DecodeFile(path, &f)
+		if err != nil {
+			return nil, false, fmt.Errorf("config %s: %w", path, err)
+		}
+		if !meta.IsDefined("desktop", "provider_access") {
+			continue
+		}
+		saw = true
+		for _, name := range f.Desktop.ProviderAccess {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			merged = append(merged, name)
+		}
+	}
+	return merged, saw, nil
+}
+
 // LoadForEdit returns a config to seed the `reasonix setup` wizard when reconfiguring:
 // the built-in defaults with the file at path (if present) decoded on top, so a
 // reconfigure preserves the user's existing providers and agent settings instead
@@ -1502,6 +1870,7 @@ func LoadForEdit(path string) *Config {
 	normalizeLegacyMCPTiers(cfg)
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
+	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 	return cfg
@@ -1642,6 +2011,11 @@ func officialProviderHost(baseURL string) string {
 
 func ensureProviderModels(p *ProviderEntry, required []string, fallbackDefault string) {
 	if p == nil {
+		return
+	}
+	// If the user has explicitly curated a model list (via Settings), respect
+	// that choice and do not merge additional required models.
+	if len(p.Models) > 0 {
 		return
 	}
 	models := mergeModelLists(required, p.ModelList())
@@ -1793,11 +2167,11 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		APIKeyEnv:     "DEEPSEEK_API_KEY",
 		BalanceURL:    "https://api.deepseek.com/user/balance",
 		ContextWindow: 1_000_000,
-		Prices:        deepSeekV4Prices(),
+		Prices:        deepSeekV4PricesForConfig(c),
 	}
 	if old, ok := c.Provider("deepseek-flash"); ok {
 		entry = officialProviderFromLegacy(entry, old)
-		entry.Prices = deepSeekV4Prices()
+		entry.Prices = deepSeekV4PricesForConfig(c)
 		entry.Models = mergeModelLists([]string{"deepseek-v4-flash", "deepseek-v4-pro"}, old.ModelList())
 		entry.Default = firstKnownModel(entry.Default, entry.Models, "deepseek-v4-flash")
 	}
@@ -1806,9 +2180,12 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 
 func ensureMimoAPIProvider(c *Config) {
 	models := []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"}
+	visionModels := []string{"mimo-v2.5", "mimo-v2-omni"}
 	if p, ok := c.Provider("mimo-api"); ok {
 		if isOfficialMimoAPIProvider(p) {
 			mergeCuratedModelsIntoProvider(p, models, "mimo-v2.5-pro")
+			mergeVisionModelsIntoProvider(p, visionModels)
+			backfillMimoDomesticPrices(p)
 		}
 		return
 	}
@@ -1817,19 +2194,24 @@ func ensureMimoAPIProvider(c *Config) {
 		Kind:          "openai",
 		BaseURL:       "https://api.xiaomimimo.com/v1",
 		Models:        models,
+		VisionModels:  visionModels,
 		Default:       "mimo-v2.5-pro",
 		APIKeyEnv:     "MIMO_API_KEY",
 		ContextWindow: 1_048_576,
+		Prices:        mimoDomesticPrices(models),
 		NoProxy:       true,
 	})
 }
 
 func ensureMimoTokenPlanProvider(c *Config, includeMimoFlash bool) {
 	models := []string{"mimo-v2.5-pro", "mimo-v2.5"}
+	visionModels := []string{"mimo-v2.5"}
 	if p, ok := c.Provider("mimo-token-plan"); ok {
 		if isOfficialMimoTokenPlanProvider(p) {
 			mergeCuratedModelsIntoProvider(p, models, "mimo-v2.5-pro")
+			mergeVisionModelsIntoProvider(p, visionModels)
 			clearMixedMimoTokenPlanPrice(p)
+			backfillMimoDomesticPrices(p)
 		}
 		return
 	}
@@ -1838,9 +2220,11 @@ func ensureMimoTokenPlanProvider(c *Config, includeMimoFlash bool) {
 		Kind:          "openai",
 		BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
 		Models:        models,
+		VisionModels:  visionModels,
 		Default:       "mimo-v2.5-pro",
 		APIKeyEnv:     "MIMO_API_KEY",
 		ContextWindow: 1_048_576,
+		Prices:        mimoDomesticPrices(models),
 		NoProxy:       true,
 	}
 	if old, ok := c.Provider("mimo-pro"); ok {
@@ -1856,6 +2240,7 @@ func ensureMimoTokenPlanProvider(c *Config, includeMimoFlash bool) {
 		entry.Default = firstKnownModel(entry.Default, entry.Models, entry.Default)
 	}
 	clearMixedMimoTokenPlanPrice(&entry)
+	backfillMimoDomesticPrices(&entry)
 	c.Providers = append(c.Providers, entry)
 }
 
@@ -1872,12 +2257,38 @@ func isOpenAIProviderKind(e *ProviderEntry) bool {
 }
 
 func mergeCuratedModelsIntoProvider(e *ProviderEntry, models []string, fallback string) {
+	// If the user has explicitly curated a model list (via Settings), respect
+	// that choice and do not merge additional curated models.
+	if len(e.Models) > 0 {
+		return
+	}
 	currentDefault := e.Default
 	if strings.TrimSpace(currentDefault) == "" {
 		currentDefault = e.Model
 	}
 	e.Models = mergeModelLists(models, e.ModelList())
 	e.Default = firstKnownModel(currentDefault, e.Models, fallback)
+}
+
+func mergeVisionModelsIntoProvider(e *ProviderEntry, models []string) {
+	if e == nil {
+		return
+	}
+	enabled := map[string]bool{}
+	for _, model := range e.ChatModelList() {
+		enabled[model] = true
+	}
+	merged := e.VisionModels
+	if merged == nil {
+		merged = models
+	}
+	out := make([]string, 0, len(merged))
+	for _, model := range merged {
+		if enabled[model] && IsLikelyChatModel(model) {
+			out = append(out, model)
+		}
+	}
+	e.VisionModels = out
 }
 
 func clearMixedMimoTokenPlanPrice(e *ProviderEntry) {

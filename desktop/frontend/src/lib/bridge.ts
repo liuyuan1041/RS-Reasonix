@@ -161,6 +161,7 @@ export interface AppBindings {
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
+  ProbeGeoEnv(): Promise<string>;
   Capabilities(): Promise<CapabilitiesView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
@@ -180,12 +181,11 @@ export interface AppBindings {
   ListDir(rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
-  ProbeGeoEnv(): Promise<string>;
-  WorkspaceChanges(): Promise<WorkspaceChangesView>;
+  WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   GitBranches(): Promise<string[]>;
   GitCheckout(branch: string): Promise<void>;
-  WorkspaceGitHistory(path: string): Promise<GitCommitView[]>;
-  WorkspaceGitCommitDetail(hash: string, path: string): Promise<GitCommitDetailView>;
+  WorkspaceGitHistory(tabID: string, path: string): Promise<GitCommitView[]>;
+  WorkspaceGitCommitDetail(tabID: string, hash: string, path: string): Promise<GitCommitDetailView>;
   OpenWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealPath(path: string): Promise<void>;
@@ -334,6 +334,9 @@ declare global {
 
 // Must match desktop/app.go's eventChannel constant.
 const EVENT_CHANNEL = "agent:event";
+const RECENT_NATIVE_FILE_DRAG_MS = 2000;
+const WAILS_NON_FILE_DRAG_MESSAGE = "additional File object is not a file on the disk";
+const UNCAUGHT_ERROR_PREFIX_RE = /^Uncaught(?:\s+\(in promise\))?(?:\s+\w*Error)?:\s*/i;
 
 // Resolve the Wails binding at CALL time, not module-load time: in dev the Wails
 // runtime can inject window.go AFTER this module first evaluates, so snapshotting
@@ -377,6 +380,85 @@ export function onBuiltInMCPUpdate(cb: (status: BuiltInMCPUpdateStatus) => void)
   return () => {};
 }
 
+function errorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
+  }
+  return String(err);
+}
+
+export function isWailsNonFileDragError(err: unknown, recentNativeFileDrag = false): boolean {
+  const msg = errorMessage(err).trim().replace(UNCAUGHT_ERROR_PREFIX_RE, "");
+  if (msg.includes(WAILS_NON_FILE_DRAG_MESSAGE)) return true;
+  return recentNativeFileDrag && msg.toLowerCase() === "invalid argument";
+}
+
+export function isWailsNonFileDragErrorEvent(
+  event: Pick<ErrorEvent, "error" | "message">,
+  recentNativeFileDrag = false,
+): boolean {
+  if (isWailsNonFileDragError(event.error ?? event.message, recentNativeFileDrag)) return true;
+  return event.error != null && isWailsNonFileDragError(event.message, recentNativeFileDrag);
+}
+
+function dataTransferLooksLikeFileDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  if (dt.files?.length > 0) return true;
+  return Array.from(dt.types ?? []).includes("Files");
+}
+
+let wailsDragSuppressionRefs = 0;
+let wailsDragSuppressionUninstall: (() => void) | null = null;
+let lastNativeFileDragAt = 0;
+
+export function installWailsNonFileDragErrorSuppression(): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  wailsDragSuppressionRefs += 1;
+  if (!wailsDragSuppressionUninstall) {
+    const markNativeFileDrag = (e: DragEvent) => {
+      if (dataTransferLooksLikeFileDrag(e.dataTransfer)) lastNativeFileDragAt = Date.now();
+    };
+    const hasRecentNativeFileDrag = () => Date.now() - lastNativeFileDragAt <= RECENT_NATIVE_FILE_DRAG_MS;
+    const suppressNonFileDragError = (e: ErrorEvent) => {
+      if (isWailsNonFileDragErrorEvent(e, hasRecentNativeFileDrag())) {
+        e.preventDefault();
+      }
+    };
+    const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
+      if (isWailsNonFileDragError(e.reason, hasRecentNativeFileDrag())) {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener("dragenter", markNativeFileDrag, true);
+    window.addEventListener("dragover", markNativeFileDrag, true);
+    window.addEventListener("drop", markNativeFileDrag, true);
+    window.addEventListener("error", suppressNonFileDragError);
+    window.addEventListener("unhandledrejection", suppressNonFileDragRejection);
+    wailsDragSuppressionUninstall = () => {
+      window.removeEventListener("dragenter", markNativeFileDrag, true);
+      window.removeEventListener("dragover", markNativeFileDrag, true);
+      window.removeEventListener("drop", markNativeFileDrag, true);
+      window.removeEventListener("error", suppressNonFileDragError);
+      window.removeEventListener("unhandledrejection", suppressNonFileDragRejection);
+      lastNativeFileDragAt = 0;
+    };
+  }
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    wailsDragSuppressionRefs = Math.max(0, wailsDragSuppressionRefs - 1);
+    if (wailsDragSuppressionRefs === 0 && wailsDragSuppressionUninstall) {
+      wailsDragSuppressionUninstall();
+      wailsDragSuppressionUninstall = null;
+    }
+  };
+}
+
 // onFilesDropped subscribes to native OS file drops landing on the composer (the
 // --wails-drop-target element); the callback gets the dropped files' absolute
 // paths. No-op in the browser dev mock, where the runtime is absent.
@@ -387,27 +469,14 @@ export function onFilesDropped(cb: (paths: string[]) => void): () => void {
   // Wails' internal ResolveFilePaths throws when a non-file object (e.g. the
   // window icon) is dragged onto the webview. The error is uncaught and crashes
   // the app. Intercept it here so only real file drops reach the callback.
-  const suppressNonFileDragError = (e: ErrorEvent) => {
-    if (e.message?.includes("additional File object is not a file on the disk")) {
-      e.preventDefault();
-    }
-  };
-  const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
-    const msg = e.reason?.message ?? String(e.reason);
-    if (msg.includes("additional File object is not a file on the disk")) {
-      e.preventDefault();
-    }
-  };
-  window.addEventListener("error", suppressNonFileDragError);
-  window.addEventListener("unhandledrejection", suppressNonFileDragRejection);
+  const uninstallDragSuppression = installWailsNonFileDragErrorSuppression();
 
   rt.OnFileDrop((_x, _y, paths) => {
     if (Array.isArray(paths) && paths.length > 0) cb(paths);
   }, true);
   return () => {
     rt.OnFileDropOff?.();
-    window.removeEventListener("error", suppressNonFileDragError);
-    window.removeEventListener("unhandledrejection", suppressNonFileDragRejection);
+    uninstallDragSuppression();
   };
 }
 
@@ -543,32 +612,6 @@ function mockScenario(): "demo" | "fresh" | "running" {
   if (value === "fresh" || value === "empty" || value === "first-run") return "fresh";
   if (value === "running" || value === "busy" || value === "streaming") return "running";
   return "demo";
-}
-
-// Mock geo preview data for browser dev
-function mockRasterPreview(path: string) {
-  return {
-    __geo_type__: "raster_preview",
-    preview_url: "http://127.0.0.1:60068/preview/60a21b5d8c2247fabd7ad520d22fe08c.webp",
-    preview_width: 256, preview_height: 256, preview_size_bytes: 27850,
-    rgb_bands: [1, 1, 1], http_port: 60068,
-    extent: { xmin: 116.0, xmax: 116.256, ymin: 39.744, ymax: 40.0 },
-    metadata: { data_type: "raster", driver: "GTiff", path, crs: "EPSG:4326",
-      size: { width: 256, height: 256 }, band_count: 1,
-      bands: [{ index: 1, data_type: "Float32", nodata: -999, color_interp: "Gray",
-        statistics: { min: 0.31, max: 0.94, mean: 0.60, stddev: 0.09 } }] },
-  };
-}
-
-function mockVectorPreview(path: string) {
-  return {
-    __geo_type__: "vector_preview",
-    geojson_url: "http://127.0.0.1:60068/geojson/60a21b5d8c2247fabd7ad520d22fe08c",
-    feature_count: 156, http_port: 60068,
-    metadata: { data_type: "vector", driver: "ESRI Shapefile", path,
-      feature_count: 156, geometry_types: ["Polygon"],
-      crs: "EPSG:4326", properties: ["id", "name", "area"] },
-  };
 }
 
 function makeMockApp(): AppBindings {
@@ -783,13 +826,13 @@ function makeMockApp(): AppBindings {
     subagentEffort: "",
     autoPlan: "off",
     providers: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     officialProviders: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-api", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-api", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], visionModels: ["mimo-v2.5", "mimo-v2-omni"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"] },
     sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [], shell: "auto" },
@@ -908,7 +951,7 @@ function makeMockApp(): AppBindings {
     },
     desktopLanguage: "",
     desktopLayoutStyle: "classic",
-    desktopTheme: "light",
+    desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
     displayMode: "compact",
@@ -1223,6 +1266,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: globalWorkspaceRoot,
       workspaceName: "Global",
+      workspacePath: globalWorkspaceRoot,
       topicId: "",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1241,6 +1285,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-db",
       workspaceName: "joyquant-db",
+      workspacePath: "~/projects/joyquant-db",
+      gitBranch: "main",
       topicId: "topic_dev_standard",
       topicTitle: t("mock.trashDevStandardTitle"),
       projectColor: "blue",
@@ -1259,6 +1305,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-sys",
       workspaceName: "joyquant-sys",
+      workspacePath: "~/projects/joyquant-sys",
+      gitBranch: "feature/p3b",
       topicId: "topic_p3b_pd",
       topicTitle: "p3b P&D",
       projectColor: "purple",
@@ -1277,6 +1325,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: "",
       workspaceName: "Global",
+      workspacePath: "~/projects/joyquant-db",
       topicId: "topic_global",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1850,11 +1899,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(active?.toolApprovalMode, active ? normalizeMode(active.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(active?.collaborationMode, active?.goal, active ? normalizeMode(active.mode) : "normal");
+          const workspacePath = active?.workspacePath || active?.workspaceRoot || active?.cwd || cwd;
           return {
             label: active?.label ?? "DeepSeek-R1",
             ready: active?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: active?.cwd || cwd,
+            workspaceRoot: active?.workspaceRoot || workspacePath,
+            workspaceName: active?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: active?.gitBranch || (active?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -1869,11 +1924,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(tab?.toolApprovalMode, tab ? normalizeMode(tab.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(tab?.collaborationMode, tab?.goal, tab ? normalizeMode(tab.mode) : "normal");
+          const workspacePath = tab?.workspacePath || tab?.workspaceRoot || tab?.cwd || cwd;
           return {
             label: tab?.label ?? "DeepSeek-R1",
             ready: tab?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: tab?.cwd || cwd,
+            workspaceRoot: tab?.workspaceRoot || workspacePath,
+            workspaceName: tab?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: tab?.gitBranch || (tab?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -2111,21 +2172,6 @@ function makeMockApp(): AppBindings {
         .map((name) => ({ name, isDir: false }));
     },
     async ReadFile(rel: string) {
-      // Mock geo file previews for browser dev
-      const ext = rel.includes(".") ? rel.slice(rel.lastIndexOf(".")).toLowerCase() : "";
-      if (ext === ".tif" || ext === ".tiff") {
-        return {
-          path: rel, body: JSON.stringify(mockRasterPreview(rel)), size: 0,
-          truncated: false, binary: false, kind: "geo_raster" as const,
-          url: "http://127.0.0.1:60068/preview/60a21b5d8c2247fabd7ad520d22fe08c.webp",
-        };
-      }
-      if (ext === ".shp" || ext === ".geojson") {
-        return {
-          path: rel, body: JSON.stringify(mockVectorPreview(rel)), size: 0,
-          truncated: false, binary: false, kind: "geo_vector" as const,
-        };
-      }
       const samples: Record<string, string> = {
         "README.md": "# Reasonix\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n",
         "go.mod": "module reasonix\n\ngo 1.23\n",
@@ -2140,16 +2186,7 @@ function makeMockApp(): AppBindings {
         binary: false,
       };
     },
-    async ProbeGeoEnv() {
-      // In browser dev mode, return mock probe result so status dots aren't gray.
-      return JSON.stringify({
-        __env_block__: true,
-        gdal: { status: "ready", version: "3.13.0", bin_dir: "D:\\anaconda\\anaconda3\\envs\\gee\\Library\\bin" },
-        qgis: { status: "ready", version: "3.40.4", python: "D:\\QGIS\\bin\\python3.exe", processing_ready: true },
-        gee: { status: "ready", version: "1.7.26", project: "ee-copythree666" },
-      });
-    },
-    async WorkspaceChanges() {
+    async WorkspaceChanges(_tabID: string) {
       return {
         gitAvailable: true,
         gitBranch: "main",
@@ -2173,12 +2210,12 @@ function makeMockApp(): AppBindings {
     async GitCheckout(_branch: string) {
       console.info("mock GitCheckout", _branch);
     },
-    async WorkspaceGitHistory(path: string) {
+    async WorkspaceGitHistory(_tabID: string, path: string) {
       return [
         { hash: "abcdef123456", author: "Mock Author", date: new Date().toISOString(), message: "Mock commit message for " + path },
       ];
     },
-    async WorkspaceGitCommitDetail(_hash: string, path: string) {
+    async WorkspaceGitCommitDetail(_tabID: string, _hash: string, path: string) {
       if (path) {
         return { diff: "--- a/mock\n+++ b/mock\n@@ -1,1 +1,1 @@\n-mock\n+mock diff" };
       }
@@ -2421,9 +2458,9 @@ function makeMockApp(): AppBindings {
     },
     async AddOfficialProviderAccess(kind: string, key: string) {
       const templates: Record<string, ProviderView> = {
-        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-        "mimo-api": { name: "mimo-api", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
-        "mimo-token-plan": { name: "mimo-token-plan", builtIn: true, added: true, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        "mimo-api": { name: "mimo-api", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"], visionModels: ["mimo-v2.5", "mimo-v2-omni"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        "mimo-token-plan": { name: "mimo-token-plan", builtIn: true, added: true, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro", "mimo-v2.5"], visionModels: ["mimo-v2.5"], visionModelsConfigured: true, default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
       };
       const next = templates[kind] ?? templates.deepseek;
       const i = settings.providers.findIndex((x) => x.name === next.name);
@@ -2689,6 +2726,8 @@ function makeMockApp(): AppBindings {
         scope: "project",
         workspaceRoot,
         workspaceName: workspaceRoot.split("/").filter(Boolean).pop() ?? workspaceRoot,
+        workspacePath: workspaceRoot,
+        gitBranch: "main",
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, t("mock.newSession")),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2717,6 +2756,7 @@ function makeMockApp(): AppBindings {
         scope: "global",
         workspaceRoot: "",
         workspaceName: "Global",
+        workspacePath: cwd,
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, "Global"),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2873,6 +2913,8 @@ function makeMockApp(): AppBindings {
     },
     async ContextPanel(_tabID: string) {
       const now = Date.now();
+      const currency = "¥";
+      const cost = (usd: number) => currency === "¥" ? Number((usd * 7.15).toFixed(4)) : usd;
       return {
         usedTokens: 42124,
         windowTokens: 128000,
@@ -2884,9 +2926,9 @@ function makeMockApp(): AppBindings {
         cacheMissTokens: 13000,
         requestCount: 10,
         elapsedMs: 33 * 60 * 1000,
-        sessionCost: 0.018,
-        sessionCurrency: "$",
-        sessionCostUsd: 0.018,
+        sessionCost: cost(0.018),
+        sessionCurrency: currency,
+        sessionCostUsd: cost(0.018),
         sources: {
           executor: {
             promptTokens: 24100,
@@ -2896,9 +2938,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 76000,
             cacheMissTokens: 9000,
             requestCount: 4,
-            sessionCost: 0.0124,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0124,
+            sessionCost: cost(0.0124),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0124),
           },
           planner: {
             promptTokens: 1800,
@@ -2908,9 +2950,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 3400,
             cacheMissTokens: 700,
             requestCount: 1,
-            sessionCost: 0.0011,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0011,
+            sessionCost: cost(0.0011),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0011),
           },
           subagent: {
             promptTokens: 4200,
@@ -2920,9 +2962,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 6100,
             cacheMissTokens: 2100,
             requestCount: 2,
-            sessionCost: 0.0032,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0032,
+            sessionCost: cost(0.0032),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0032),
           },
           compaction: {
             promptTokens: 2600,
@@ -2932,9 +2974,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 1100,
             cacheMissTokens: 900,
             requestCount: 1,
-            sessionCost: 0.0009,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0009,
+            sessionCost: cost(0.0009),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0009),
           },
           classifier: {
             promptTokens: 900,
@@ -2944,9 +2986,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 300,
             cacheMissTokens: 250,
             requestCount: 1,
-            sessionCost: 0.0003,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0003,
+            sessionCost: cost(0.0003),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0003),
           },
           title: {
             promptTokens: 420,
@@ -2956,9 +2998,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 100,
             cacheMissTokens: 50,
             requestCount: 1,
-            sessionCost: 0.0001,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0001,
+            sessionCost: cost(0.0001),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0001),
           },
         },
         mock: true,
@@ -2973,6 +3015,9 @@ function makeMockApp(): AppBindings {
           { path: t("mock.changedFile2Path"), sources: ["session"], gitStatus: "added", turns: [6], latestPrompt: t("mock.changedFile2Prompt"), latestTime: now - 60 * 1000 },
         ],
       };
+    },
+    async ProbeGeoEnv() {
+      return '{"gdal":{"status":"unknown"},"qgis":{"status":"unknown"},"gee":{"status":"unknown"}}';
     },
   };
 }

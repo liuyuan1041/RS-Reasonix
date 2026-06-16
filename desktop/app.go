@@ -427,6 +427,7 @@ func (a *App) restoreOrBuildTabs() {
 	// freshly written config (including the user's default_model) is
 	// picked up by Load instead of falling back to built-in defaults.
 	_, _ = config.MigrateLegacyIfNeeded()
+	_, _ = config.ResetOfficialProviderPricingOnUpgrade(config.UserConfigPath())
 
 	// Load i18n from the first available config.
 	// Prefer DesktopLanguage (desktop UI setting) over Language (CLI setting),
@@ -937,7 +938,7 @@ func (a *App) NewSession() error {
 		return workspaceNotReadyErr(tab)
 	}
 	// Tab is already blank — just persist and skip the new-session dance.
-	if !ctrl.Running() && !messagesHaveConversationContent(ctrl.History()) {
+	if !controllerHasActiveRuntimeWork(ctrl) && !messagesHaveConversationContent(ctrl.History()) {
 		a.persistTabSessionPath(tab, ctrl.SessionPath())
 		return nil
 	}
@@ -977,6 +978,7 @@ func (a *App) ClearSession() error {
 	if err := ctrl.ClearSession(); err != nil {
 		return err
 	}
+	tab.resetTelemetry()
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
 	return nil
@@ -992,7 +994,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl *control.Cont
 		oldSink.tabID = detachedRuntimeTabID(oldPath)
 		oldSink.ctx = nil
 	}
-	if oldCtrl.Running() {
+	if oldCtrl.RuntimeStatus().Cancellable {
 		oldCtrl.Cancel()
 		if err := waitControllerStopped(oldCtrl); err != nil {
 			return err
@@ -2648,6 +2650,13 @@ func workspaceName(path string) string {
 	return name
 }
 
+func tabWorkspaceName(tab *WorkspaceTab, cwd string) string {
+	if tab.Scope == "global" {
+		return globalProjectTitle()
+	}
+	return workspaceName(cwd)
+}
+
 func (a *App) SwitchWorkspace(dir string) (string, error) {
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -2706,6 +2715,9 @@ type HistoryToolCall struct {
 	Arguments         string `json:"arguments"`
 	Subject           string `json:"subject,omitempty"`
 	Summary           string `json:"summary,omitempty"`
+	Diff              string `json:"diff,omitempty"`
+	Added             int    `json:"added,omitempty"`
+	Removed           int    `json:"removed,omitempty"`
 	ArgumentsArchived bool   `json:"argumentsArchived,omitempty"`
 }
 
@@ -2759,7 +2771,7 @@ func historyMessages(msgs []provider.Message, resolveUserContent func(string) st
 						args = replayed
 					}
 				}
-				hm.ToolCalls[i] = historyToolCall(tc.ID, tc.Name, args, toolResults[tc.ID])
+				hm.ToolCalls[i] = historyToolCall(tc, args, toolResults[tc.ID])
 			}
 		}
 		if m.Role == provider.RoleTool {
@@ -2774,18 +2786,21 @@ func historyMessages(msgs []provider.Message, resolveUserContent func(string) st
 
 const historyToolPreviewLimit = 2_000
 
-func historyToolCall(id, name, args string, result provider.Message) HistoryToolCall {
+func historyToolCall(tc provider.ToolCall, args string, result provider.Message) HistoryToolCall {
 	call := HistoryToolCall{
-		ID:      id,
-		Name:    name,
-		Subject: historyToolSubject(name, args),
-		Summary: historyToolSummary(name, args, result.Content),
+		ID:      tc.ID,
+		Name:    tc.Name,
+		Subject: historyToolSubject(tc.Name, args),
+		Summary: historyToolSummary(tc.Name, args, result.Content),
+		Diff:    tc.Diff,
+		Added:   tc.Added,
+		Removed: tc.Removed,
 	}
-	if name == "todo_write" {
+	if tc.Name == "todo_write" {
 		call.Arguments = args
 		return call
 	}
-	if id == "" {
+	if tc.ID == "" {
 		call.Arguments = args
 		return call
 	}
@@ -3167,7 +3182,7 @@ func previewEventSessionMessages(path string) ([]HistoryMessage, bool, error) {
 				id := tc.ID
 				name := firstNonEmpty(tc.Name, tc.Function.Name)
 				args := firstNonEmpty(tc.Arguments, tc.Function.Arguments)
-				hm.ToolCalls = append(hm.ToolCalls, historyToolCall(id, name, args, provider.Message{}))
+				hm.ToolCalls = append(hm.ToolCalls, historyToolCall(provider.ToolCall{ID: id, Name: name, Arguments: args}, args, provider.Message{}))
 				if id != "" {
 					toolName[id] = name
 				}
@@ -3355,6 +3370,10 @@ type Meta struct {
 	StartupErr        string `json:"startupErr,omitempty"`
 	EventChannel      string `json:"eventChannel"`
 	Cwd               string `json:"cwd"`
+	WorkspaceRoot     string `json:"workspaceRoot,omitempty"`
+	WorkspaceName     string `json:"workspaceName,omitempty"`
+	WorkspacePath     string `json:"workspacePath,omitempty"`
+	GitBranch         string `json:"gitBranch,omitempty"`
 	AutoApproveTools  bool   `json:"autoApproveTools"`
 	Bypass            bool   `json:"bypass"` // legacy JSON key for YOLO/full-access tool auto-approval
 	CollaborationMode string `json:"collaborationMode"`
@@ -3392,6 +3411,10 @@ func (a *App) MetaForTab(tabID string) Meta {
 		StartupErr:        tab.StartupErr,
 		EventChannel:      eventChannel,
 		Cwd:               cwd,
+		WorkspaceRoot:     cwd,
+		WorkspaceName:     tabWorkspaceName(tab, cwd),
+		WorkspacePath:     cwd,
+		GitBranch:         workspaceGitBranch(cwd),
 		AutoApproveTools:  autoApproveTools,
 		Bypass:            autoApproveTools,
 		CollaborationMode: collaborationMode,
@@ -4910,7 +4933,11 @@ func modelProviderAccessAllowed(access map[string]bool, name string) bool {
 }
 
 func controllerHasActiveRuntimeWork(ctrl *control.Controller) bool {
-	return ctrl != nil && (ctrl.Running() || ctrl.PendingPrompt() || len(ctrl.Jobs()) > 0)
+	if ctrl == nil {
+		return false
+	}
+	status := ctrl.RuntimeStatus()
+	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
 }
 
 func rebuildControllerActiveWorkError(setting string) error {
@@ -5352,7 +5379,10 @@ func skipWorkspaceEntry(rel, name string, isDir bool) bool {
 }
 
 func (a *App) activeWorkspaceBase() (string, error) {
-	root := a.activeWorkspaceRoot()
+	return workspaceBaseFromRoot(a.activeWorkspaceRoot())
+}
+
+func workspaceBaseFromRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" || root == "." {
 		return os.Getwd()
 	}
