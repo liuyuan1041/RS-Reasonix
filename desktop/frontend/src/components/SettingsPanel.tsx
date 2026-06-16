@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, GripVertical, KeyRound, Loader2, Play, QrCode, RefreshCw, Send } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
-import { mergedFetchedProviderModels, providerDefaultModel, providerModelCandidates } from "../lib/providerModels";
+import { inferredVisionModels, mergedFetchedProviderModels, providerDefaultModel, providerModelCandidates } from "../lib/providerModels";
 import { useUpdater } from "../lib/useUpdater";
 import {
   THEME_STYLES,
@@ -33,6 +33,18 @@ import {
 import { getAvailableFontFamilies, getAvailableMonoFontFamilies } from "../lib/fontAvailability";
 import { getDisplayMode, onDisplayModeChange, setDisplayMode as setLocalDisplayMode } from "../lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
+import {
+  comboFromKeyboardEvent,
+  detectShortcutPlatform,
+  formatShortcutCombo,
+  onShortcutsChanged,
+  resetCustomShortcuts,
+  resolvedShortcutCombo,
+  saveCustomShortcut,
+  shortcutConflict,
+  shortcutDefinitions,
+  type ShortcutAction,
+} from "../lib/keyboardShortcuts";
 import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
@@ -43,8 +55,9 @@ import { getGenerativePreset, setGenerativePreset, generativeMusic, type Generat
 import { SoundSelect } from "./SoundSelect";
 import { getSuccessPreference, setSuccessPreference, getAttentionPreference, setAttentionPreference, playSuccessChime, playAttentionChime, type SoundWavPref } from "../lib/sound";
 import { ModalCloseButton } from "./ModalCloseButton";
+import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "permissions", "sandbox", "network", "appearance", "updates"];
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 
 // SettingsPanel is the desktop settings centre — a centred modal with left
@@ -164,6 +177,7 @@ export function SettingsPanel({
                 {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><SkillsSettingsPage /></SettingsPageShell>}
                 {tab === "memory" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><MemorySettingsPage /></SettingsPageShell>}
                 {tab === "hooks" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><HooksSection onChanged={onChanged} /></SettingsPageShell>}
+                {tab === "shortcuts" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><ShortcutsSection /></SettingsPageShell>}
                 {tab === "permissions" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><PermissionsSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "sandbox" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><SandboxSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "network" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><NetworkSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
@@ -337,6 +351,7 @@ function settingsTabPageTitle(id: SettingsTab, t: ReturnType<typeof useT>): stri
     case "mcp": return t("settings.tab.mcp");
     case "skills": return t("settings.tab.skills");
     case "memory": return t("settings.tab.memory");
+    case "shortcuts": return t("settings.tab.shortcuts");
     default: return settingsTabLabel(id, t);
   }
 }
@@ -369,6 +384,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.memory");
     case "hooks":
       return t("settings.tab.hooks");
+    case "shortcuts":
+      return t("settings.tab.shortcuts");
     case "network":
       return t("settings.tab.network");
     case "permissions":
@@ -400,6 +417,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return t("settings.tabSub.memory");
     case "hooks":
       return t("settings.tabSub.hooks");
+    case "shortcuts":
+      return t("settings.tabSub.shortcuts");
     case "network":
       return proxyModeLabel(normalizeProxyMode(s.network.proxyMode), t);
     case "permissions":
@@ -429,6 +448,110 @@ function botSettingsMeta(bot: BotSettingsView, t: ReturnType<typeof useT>): stri
   if (connections === 0) return t("settings.botNoConnections");
   if (!normalized.enabled) return t("settings.botDisabledWithConnections", { n: connections });
   return t("settings.botConnectionCount", { n: connections });
+}
+
+function ShortcutsSection() {
+  const t = useT();
+  const [platform] = useState(() => detectShortcutPlatform());
+  const [revision, setRevision] = useState(0);
+  const [recording, setRecording] = useState<ShortcutAction | null>(null);
+  const [conflict, setConflict] = useState<{ action: ShortcutAction; conflictAction: ShortcutAction } | null>(null);
+
+  useEffect(() => onShortcutsChanged(() => setRevision((value) => value + 1)), []);
+
+  const definitions = shortcutDefinitions();
+  const commitShortcut = (action: ShortcutAction, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const combo = comboFromKeyboardEvent(event.nativeEvent);
+    if (!combo) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const conflictDefinition = shortcutConflict(action, combo, platform);
+    if (conflictDefinition) {
+      setConflict({ action, conflictAction: conflictDefinition.action });
+      return;
+    }
+    saveCustomShortcut(action, combo);
+    setConflict(null);
+    setRecording(null);
+    setRevision((value) => value + 1);
+  };
+
+  return (
+    <SettingsSection
+      title={t("settings.shortcutsTitle")}
+      description={t("settings.shortcutsHint")}
+      actions={
+        <button
+          className="chip chip--icon"
+          type="button"
+          title={t("settings.shortcutsResetAll")}
+          aria-label={t("settings.shortcutsResetAll")}
+          onClick={() => {
+            resetCustomShortcuts();
+            setConflict(null);
+            setRecording(null);
+            setRevision((value) => value + 1);
+          }}
+        >
+          <RefreshCw size={14} />
+        </button>
+      }
+    >
+      <div className="shortcuts-settings" data-revision={revision}>
+        {conflict && (
+          <div className="shortcuts-settings__conflict" role="alert">
+            {t("settings.shortcutsConflict", {
+              action: t(definitions.find((definition) => definition.action === conflict.action)?.labelKey ?? "settings.tab.shortcuts"),
+              conflict: t(definitions.find((definition) => definition.action === conflict.conflictAction)?.labelKey ?? "settings.tab.shortcuts"),
+            })}
+          </div>
+        )}
+        {definitions.map((definition) => {
+          const resolved = resolvedShortcutCombo(definition.action, platform);
+          const defaultCombo = definition.defaults[platform];
+          const display = formatShortcutCombo(resolved, platform);
+          const isCustom = formatShortcutCombo(resolved, platform) !== formatShortcutCombo(defaultCombo, platform);
+          const isRecording = recording === definition.action;
+          return (
+            <div className="shortcuts-settings__row" key={definition.action}>
+              <div className="shortcuts-settings__copy">
+                <div className="shortcuts-settings__label">{t(definition.labelKey)}</div>
+                <div className="shortcuts-settings__desc">{t(definition.descriptionKey)}</div>
+              </div>
+              <div className="shortcuts-settings__control">
+                <button
+                  className={`shortcuts-settings__key${isRecording ? " shortcuts-settings__key--recording" : ""}`}
+                  type="button"
+                  aria-label={isRecording ? t("settings.shortcutsRecording") : display}
+                  aria-pressed={isRecording}
+                  onClick={() => {
+                    setRecording(definition.action);
+                    setConflict(null);
+                  }}
+                  onKeyDown={(event) => isRecording && commitShortcut(definition.action, event)}
+                >
+                  {isRecording ? t("settings.shortcutsRecording") : <ShortcutComboDisplay combo={resolved} platform={platform} />}
+                </button>
+                <button
+                  className="chip"
+                  type="button"
+                  disabled={!isCustom}
+                  onClick={() => {
+                    saveCustomShortcut(definition.action, null);
+                    setConflict(null);
+                    setRecording(null);
+                    setRevision((value) => value + 1);
+                  }}
+                >
+                  {t("settings.shortcutsReset")}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </SettingsSection>
+  );
 }
 
 // allRefs flattens providers into "provider/model" refs for the model selectors.
@@ -618,6 +741,21 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
   return String(workspaceRoot ?? "").trim() ? "project" : "global";
 }
 
+function normalizeProviderView(p: ProviderView): ProviderView {
+  const visionModels = asArray(p.visionModels);
+  return {
+    ...p,
+    builtIn: Boolean(p.builtIn),
+    added: Boolean(p.added),
+    models: asArray(p.models),
+    visionModels,
+    visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
+    modelsUrl: p.modelsUrl ?? "",
+    reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
+    supportedEfforts: asArray(p.supportedEfforts),
+  };
+}
+
 function normalizeSettingsView(view: SettingsView | null | undefined): SettingsView | null {
   if (!view) return null;
   const permissions = view.permissions ?? { mode: "ask", allow: [], ask: [], deny: [] };
@@ -634,15 +772,8 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
   return {
     ...view,
-    providers: asArray(view.providers).map((p) => ({
-      ...p,
-      builtIn: Boolean(p.builtIn),
-      added: Boolean(p.added),
-      models: asArray(p.models),
-      modelsUrl: p.modelsUrl ?? "",
-      reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
-      supportedEfforts: asArray(p.supportedEfforts),
-    })),
+    providers: asArray(view.providers).map(normalizeProviderView),
+    officialProviders: asArray(view.officialProviders).map(normalizeProviderView),
     providerKinds: asArray(view.providerKinds),
     permissions: {
       ...permissions,
@@ -712,6 +843,10 @@ function statusBarItemLabel(id: StatusBarItemId, t: ReturnType<typeof useT>): st
   switch (id) {
     case "model":
       return t("settings.statusBarItem.model");
+    case "workspace":
+      return t("settings.statusBarItem.workspace");
+    case "git_branch":
+      return t("settings.statusBarItem.gitBranch");
     case "cache":
       return t("status.cacheLabel");
     case "cache_avg":
@@ -939,7 +1074,7 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
     void apply(() => app.SetDesktopLanguage(next));
   };
   return (
-    <SettingsSection title={t("settings.tab.general")}>
+    <SettingsSection>
       <SettingsField label={t("settings.language")}>
         <div className="set-seg">
           {LANGUAGE_PREFS.map((pref) => (
@@ -2829,8 +2964,9 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
           if (fetched.length === 0) continue;
           const models = mergedFetchedProviderModels(provider.models, fetched, { preserveCurated: true });
           const currentDefault = providerDefaultModel(provider.default, models);
-          if (sameStringList(provider.models, models) && provider.default === currentDefault) continue;
-          await app.SaveProvider({ ...provider, models, default: currentDefault });
+          const visionModels = provider.visionModels.filter((model) => models.includes(model));
+          if (sameStringList(provider.models, models) && provider.default === currentDefault && sameStringList(provider.visionModels, visionModels)) continue;
+          await app.SaveProvider({ ...provider, models, default: currentDefault, visionModels });
         } catch {
           // Background discovery is opportunistic; manual refresh shows errors.
         }
@@ -3219,10 +3355,12 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   const modelDraftForFetch = (p: ProviderView, fetched: string[]): ProviderModelDraft => {
     const candidates = providerModelCandidates(p.models, fetched);
     const selected = mergedFetchedProviderModels(p.models, fetched, { preserveCurated: true });
+    const visionSource = p.visionModelsConfigured ? p.visionModels : inferredVisionModels(candidates);
     return {
       providerName: p.name,
       candidates,
       selected: candidates.filter((model) => selected.includes(model)),
+      visionModels: candidates.filter((model) => visionSource.includes(model)),
     };
   };
 
@@ -3236,6 +3374,22 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
         [groupID]: {
           ...draft,
           selected: draft.candidates.filter((model) => selectedSet.has(model)),
+        },
+      };
+    });
+  };
+
+  const toggleModelDraftVision = (groupID: string, model: string) => {
+    setModelDrafts((prev) => {
+      const draft = prev[groupID];
+      if (!draft) return prev;
+      return {
+        ...prev,
+        [groupID]: {
+          ...draft,
+          visionModels: draft.visionModels.includes(model)
+            ? draft.visionModels.filter((candidate) => candidate !== model)
+            : draft.candidates.filter((candidate) => candidate === model || draft.visionModels.includes(candidate)),
         },
       };
     });
@@ -3332,10 +3486,17 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     const draft = modelDrafts[group.id];
     const provider = draft ? group.providers.find((p) => p.name === draft.providerName) : null;
     const models = uniqueStrings(draft?.selected ?? []);
+    const visionModels = uniqueStrings(draft?.visionModels ?? []).filter((model) => models.includes(model));
     if (!draft || !provider || models.length === 0) return;
     let saved = false;
     await apply(async () => {
-      await app.SaveProvider({ ...provider, models, default: providerDefaultModel(provider.default, models) });
+      await app.SaveProvider({
+        ...provider,
+        models,
+        visionModels,
+        visionModelsConfigured: true,
+        default: providerDefaultModel(provider.default, models),
+      });
       saved = true;
     });
     if (!saved) return;
@@ -3405,6 +3566,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
                 ? draft.selected.filter((candidate) => candidate !== model)
                 : [...draft.selected, model]
             ))}
+            onToggleDraftVision={(model) => toggleModelDraftVision(group.id, model)}
             onSelectAllDraftModels={() => updateModelDraftSelection(group.id, (draft) => draft.candidates)}
             onClearDraftModels={() => updateModelDraftSelection(group.id, () => [])}
             onCancelDraftModels={() => setGroupModelDraft(group.id, null)}
@@ -3441,6 +3603,7 @@ type ProviderModelDraft = {
   providerName: string;
   candidates: string[];
   selected: string[];
+  visionModels: string[];
 };
 
 type AddProviderMode = null | "official" | "custom";
@@ -3588,6 +3751,7 @@ function ProviderAccessCard({
   onSave,
   onRefresh,
   onToggleDraftModel,
+  onToggleDraftVision,
   onSelectAllDraftModels,
   onClearDraftModels,
   onCancelDraftModels,
@@ -3609,6 +3773,7 @@ function ProviderAccessCard({
   onSave: (p: ProviderView) => void | Promise<void>;
   onRefresh: () => void;
   onToggleDraftModel: (model: string) => void;
+  onToggleDraftVision: (model: string) => void;
   onSelectAllDraftModels: () => void;
   onClearDraftModels: () => void;
   onCancelDraftModels: () => void;
@@ -3714,6 +3879,7 @@ function ProviderAccessCard({
           busy={busy}
           fetching={fetching}
           onToggle={onToggleDraftModel}
+          onToggleVision={onToggleDraftVision}
           onSelectAll={onSelectAllDraftModels}
           onClear={onClearDraftModels}
           onCancel={onCancelDraftModels}
@@ -3763,6 +3929,7 @@ function ProviderModelDraftPicker({
   busy,
   fetching,
   onToggle,
+  onToggleVision,
   onSelectAll,
   onClear,
   onCancel,
@@ -3772,6 +3939,7 @@ function ProviderModelDraftPicker({
   busy: boolean;
   fetching: boolean;
   onToggle: (model: string) => void;
+  onToggleVision: (model: string) => void;
   onSelectAll: () => void;
   onClear: () => void;
   onCancel: () => void;
@@ -3780,6 +3948,7 @@ function ProviderModelDraftPicker({
   const t = useT();
   const [query, setQuery] = useState("");
   const selected = new Set(draft.selected);
+  const vision = new Set(draft.visionModels);
   const q = query.trim().toLowerCase();
   const visibleCandidates = q
     ? draft.candidates.filter((model) => model.toLowerCase().includes(q))
@@ -3810,17 +3979,31 @@ function ProviderModelDraftPicker({
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="provider-model-draft__list" role="list" aria-label={t("settings.modelCandidates")}>
-        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => (
-          <label className="provider-model-draft__option" key={model}>
-            <input
-              type="checkbox"
-              checked={selected.has(model)}
-              disabled={disabled}
-              onChange={() => onToggle(model)}
-            />
-            <span>{model}</span>
-          </label>
-        )) : (
+        {visibleCandidates.length > 0 ? visibleCandidates.map((model) => {
+          const enabled = selected.has(model);
+          return (
+            <div className="provider-model-draft__option" key={model}>
+              <label className="provider-model-draft__model">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  disabled={disabled}
+                  onChange={() => onToggle(model)}
+                />
+                <span>{model}</span>
+              </label>
+              <label className="provider-model-draft__vision">
+                <input
+                  type="checkbox"
+                  checked={enabled && vision.has(model)}
+                  disabled={disabled || !enabled}
+                  onChange={() => onToggleVision(model)}
+                />
+                <span>{t("settings.visionModel")}</span>
+              </label>
+            </div>
+          );
+        }) : (
           <div className="provider-model-draft__empty">{t("settings.noMatchingCandidateModels")}</div>
         )}
       </div>
@@ -3929,6 +4112,13 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
+function parseProviderListInput(value: string): string[] {
+  return uniqueStrings(value
+    .split(/[,，]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean));
+}
+
 function botAllowlistTextValues(allowlist: BotAllowlistView): Record<BotAllowlistTextKey, string> {
   return {
     qqUsers: allowlist.qqUsers.join("\n"),
@@ -3978,6 +4168,10 @@ function ProviderEditor({
   const [kind, setKind] = useState(initial?.kind ?? kinds[0] ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
+  const [visionModels, setVisionModels] = useState((initial?.visionModels ?? []).join(", "));
+  const [visionModelsConfigured, setVisionModelsConfigured] = useState(
+    Boolean(initial?.visionModelsConfigured ?? ((initial?.visionModels ?? []).length > 0)),
+  );
   const [modelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [keyDraft, setKeyDraft] = useState("");
@@ -4045,6 +4239,8 @@ function ProviderEditor({
         baseUrl: baseUrl.trim(),
         modelsUrl,
         models: [],
+        visionModels: [],
+        visionModelsConfigured: false,
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
@@ -4056,6 +4252,11 @@ function ProviderEditor({
       });
       if (fetched.length === 0) throw new Error(t("settings.fetchModelsEmpty"));
       setModels(fetched.join(", "));
+      setVisionModels((current) => {
+        const existing = parseProviderListInput(current).filter((model) => fetched.includes(model));
+        return uniqueStrings([...existing, ...inferredVisionModels(fetched)]).filter((model) => fetched.includes(model)).join(", ");
+      });
+      setVisionModelsConfigured(true);
       if (keyDraft.trim()) setKeyDraft("");
       setDefaultEffort((v) => v);
       setFetchStatus(t("settings.fetchModelsSuccess", { n: fetched.length }));
@@ -4067,10 +4268,8 @@ function ProviderEditor({
   };
 
   const save = async () => {
-    const ms = models
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean);
+    const ms = parseProviderListInput(models);
+    const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = apiKeyEnv.trim() || apiKeyEnvFromProviderName(name);
     if (keyDraft.trim()) await app.SetProviderKey(effectiveApiKeyEnv, keyDraft.trim());
     onSave({
@@ -4080,6 +4279,8 @@ function ProviderEditor({
       kind: kind.trim() || kinds[0] || "openai",
       baseUrl: baseUrl.trim(),
       models: ms,
+      visionModels: vms,
+      visionModelsConfigured: visionModelsConfigured || vms.length > 0,
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
       modelsUrl,
@@ -4164,6 +4365,17 @@ function ProviderEditor({
         <label className="set-label">{t("settings.providerContextWindow")}</label>
         <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
         <div className="mem-hint">{t("settings.contextWindowHint")}</div>
+        <label className="set-label">{t("settings.visionModels")}</label>
+        <input
+          className="mem-input"
+          placeholder={t("settings.providerModels")}
+          value={visionModels}
+          onChange={(e) => {
+            setVisionModelsConfigured(true);
+            setVisionModels(e.target.value);
+          }}
+        />
+        <div className="mem-hint">{t("settings.visionModelsHint")}</div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (

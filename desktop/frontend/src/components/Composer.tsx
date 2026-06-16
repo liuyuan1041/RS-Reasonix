@@ -8,6 +8,7 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
+import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { useToast } from "../lib/toast";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
@@ -138,10 +139,6 @@ function clipboardHasImageHint(data: DataTransfer): boolean {
 
 function isPasteShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
   return e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey) && !e.altKey;
-}
-
-function isYoloToggleShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
-  return e.key.toLowerCase() === "y" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
 }
 
 async function dataURLHash(dataUrl: string): Promise<string> {
@@ -392,6 +389,7 @@ export function Composer({
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const now = useTick(running);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1450,7 +1448,7 @@ export function Composer({
       return;
     }
 
-    if (isYoloToggleShortcut(e) && !composing) {
+    if (matchesShortcut(e.nativeEvent, "toolApproval.yolo", shortcutPlatform) && !composing) {
       e.preventDefault();
       onToggleYoloApprovalMode();
       return;
@@ -1556,7 +1554,7 @@ export function Composer({
     }
     // Esc interrupts the in-flight turn (matches the Stop button's hint), and
     // restores the text if the server hadn't replied yet.
-    if (e.key === "Escape" && running && !decisionPending) {
+    if (e.key === "Escape" && running) {
       e.preventDefault();
       handleCancel();
     }
@@ -1897,7 +1895,7 @@ export function Composer({
             <span className="composer-runstatus__dot" />
             <span className="composer-runstatus__text">{runActivity}</span>
             <Tooltip label={t("composer.stop")}>
-              <button className="composer-runstatus__stop" type="button" onClick={handleCancel} disabled={decisionPending}>
+              <button className="composer-runstatus__stop" type="button" onClick={handleCancel}>
                 <Square size={10} fill="currentColor" />
                 <span>{t("composer.stopShort")}</span>
               </button>
@@ -2048,8 +2046,10 @@ export function Composer({
         >
           <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
           <textarea
+            id="composer-input"
             ref={taRef}
             className="composer__input"
+            aria-label={t("composer.placeholder")}
             value={text}
             onChange={(e) => {
               resetPromptHistoryNavigation();

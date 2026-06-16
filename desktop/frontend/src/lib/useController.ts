@@ -10,7 +10,7 @@ import { app, onEvent, onReady } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { createRafBatch } from "./rafBatch";
 import { t } from "./i18n";
-import { summarize } from "./tools";
+import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools } from "./types";
 import type {
   BalanceInfo,
@@ -68,6 +68,7 @@ export type Item =
       durationMs?: number;
       subject?: string; // stable collapsed subject from archived history payloads
       summary?: string; // stable collapsed readout kept even after args/output archive
+      fileDiff?: ToolFileDiff; // previewed whole-file diff from writer dispatch
       isShell?: boolean; // true for !-prefix shell commands (controls default expand)
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
@@ -77,6 +78,10 @@ interface State {
   items: Item[];
   running: boolean;
   turnActive: boolean;
+  pendingPrompt: boolean;
+  backgroundJobs: number;
+  cancelRequested: boolean;
+  cancellable: boolean;
   approval?: WireApproval;
   ask?: WireAsk;
   usage?: WireUsage;
@@ -100,12 +105,17 @@ interface State {
   sessionCurrency: string;
   retry?: { attempt: number; max: number };
   seq: number;
+  sessionGen: number;
 }
 
 export const initialState: State = {
   items: [],
   running: false,
   turnActive: false,
+  pendingPrompt: false,
+  backgroundJobs: 0,
+  cancelRequested: false,
+  cancellable: false,
   context: { used: 0, window: 0, sessionTokens: 0 },
   jobs: [],
   checkpoints: [],
@@ -117,6 +127,7 @@ export const initialState: State = {
   sessionCost: 0,
   sessionCurrency: "¥",
   seq: 0,
+  sessionGen: 0,
 };
 
 function usageTotalTokens(usage?: WireUsage): number {
@@ -126,13 +137,26 @@ function usageTotalTokens(usage?: WireUsage): number {
   return Math.max(0, promptTokens + usage.completionTokens);
 }
 
+type RuntimeMetaSnapshot = {
+  running: boolean;
+  pendingPrompt?: boolean;
+  backgroundJobs?: number;
+  cancellable?: boolean;
+};
+
+export function foregroundRunningFromRuntimeMeta(meta: RuntimeMetaSnapshot): boolean {
+  if (typeof meta.cancellable === "boolean") return meta.cancellable;
+  if ((meta.backgroundJobs ?? 0) > 0 && !meta.pendingPrompt) return false;
+  return Boolean(meta.running);
+}
+
 function updatesContextGauge(usage?: WireUsage): boolean {
   const source = usage?.source?.trim();
   return !source || source === "executor";
 }
 
-function countsTowardCurrentTurn(state: State, usage?: WireUsage): boolean {
-  return updatesContextGauge(usage) || state.turnActive;
+function countsTowardCurrentTurn(state: State): boolean {
+  return state.turnActive || state.running;
 }
 
 export function sameMeta(a?: Meta, b?: Meta): boolean {
@@ -144,6 +168,10 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.startupErr === b.startupErr &&
     a.eventChannel === b.eventChannel &&
     a.cwd === b.cwd &&
+    a.workspaceRoot === b.workspaceRoot &&
+    a.workspaceName === b.workspaceName &&
+    a.workspacePath === b.workspacePath &&
+    a.gitBranch === b.gitBranch &&
     a.autoApproveTools === b.autoApproveTools &&
     a.bypass === b.bypass &&
     a.collaborationMode === b.collaborationMode &&
@@ -199,7 +227,8 @@ type Action =
   | { type: "user"; text: string; seq: number }
   | { type: "unsend" }
   | { type: "send_failed"; error: string }
-  | { type: "backend_status"; running: boolean }
+  | { type: "backend_status"; running: boolean; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean }
+  | { type: "cancel_requested" }
   | { type: "meta"; meta: Meta }
   | { type: "context"; context: ContextInfo }
   | { type: "balance"; balance: BalanceInfo }
@@ -280,6 +309,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         const archived = Boolean(tc.argumentsArchived || result?.toolResultArchived);
         const output = result?.toolResultArchived ? undefined : result?.content ?? "";
         const error = result?.toolResultError || (output ? historyToolError(output) : undefined);
+        const fileDiff = fileDiffFromWire(tc);
         items.push({
           kind: "tool",
           id: tc.id || `${idPrefix}tool${seq}`,
@@ -291,7 +321,8 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           error,
           dataArchived: archived || undefined,
           subject: tc.subject,
-          summary: tc.summary,
+          summary: summarizeFileDiff(fileDiff) || tc.summary,
+          fileDiff,
           isShell: (tc.id || "").startsWith("shell-"),
         });
         seq++;
@@ -392,7 +423,7 @@ function flushPendingUser(s: State): State {
 
 function applyEvent(s: State, e: WireEvent): State {
   if (s.discardTurn) {
-    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined };
+    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, live: undefined };
     return s;
   }
   if (s.pendingUser !== undefined && e.kind !== "turn_done") {
@@ -411,7 +442,7 @@ function applyEvent(s: State, e: WireEvent): State {
       let cur: State = s;
       if (cur.pendingUser !== undefined) cur = flushPendingUser(cur);
       const { items, id, seq } = ensureAssistant(cur);
-      return { ...cur, items, currentAssistant: id, seq, live: { id, text: "", reasoning: "", reasoningComplete: false }, running: true, turnActive: true, turnStartAt: Date.now(), turnTokens: 0, turnTotalTokens: 0, turnCost: 0 };
+      return { ...cur, items, currentAssistant: id, seq, live: { id, text: "", reasoning: "", reasoningComplete: false }, running: true, turnActive: true, pendingPrompt: false, cancelRequested: false, cancellable: true, turnStartAt: Date.now(), turnTokens: 0, turnTotalTokens: 0, turnCost: 0 };
     }
     case "text":
     case "reasoning": {
@@ -448,13 +479,15 @@ function applyEvent(s: State, e: WireEvent): State {
         const it = next[idx];
         if (it.kind === "tool") {
           const args = t.args ? t.args : it.args;
-          const summary = summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary };
+          const fileDiff = fileDiffFromWire(t);
+          const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
+          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff };
         }
         return { ...s, items: next };
       }
       const args = t.args ?? "";
-      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarize(t.name, args), isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
+      const fileDiff = fileDiffFromWire(t);
+      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
     }
     case "tool_result": {
       const t = e.tool;
@@ -492,7 +525,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, items: next };
     }
     case "usage": {
-      if (!countsTowardCurrentTurn(s, e.usage)) return s;
+      if (!countsTowardCurrentTurn(s)) return s;
       const updateContextGauge = updatesContextGauge(e.usage);
       const used = e.usage && s.context.window && updateContextGauge ? e.usage.promptTokens : s.context.used;
       const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
@@ -526,8 +559,14 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "steer":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `s${s.seq}`, level: "info", text: `↪ ${e.text ?? ""}` }] };
-    case "approval_request": return { ...s, approval: e.approval };
-    case "ask_request": return { ...s, ask: e.ask };
+    case "approval_request": {
+      if (s.cancelRequested) return s;
+      return { ...s, approval: e.approval, pendingPrompt: true, running: true, turnActive: true, cancellable: true };
+    }
+    case "ask_request": {
+      if (s.cancelRequested) return s;
+      return { ...s, ask: e.ask, pendingPrompt: true, running: true, turnActive: true, cancellable: true };
+    }
     case "turn_done": {
       if (s.pendingUser !== undefined) s = flushPendingUser(s);
       const finalized = s.items.map((it) => {
@@ -537,7 +576,7 @@ function applyEvent(s: State, e: WireEvent): State {
         return it;
       });
       let items: Item[] = e.err ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }] : finalized;
-      return { ...s, items, live: undefined, running: false, turnActive: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
+      return { ...s, items, live: undefined, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
     }
     default: return s;
   }
@@ -552,6 +591,9 @@ export function reducer(s: State, a: Action): State {
         seq: seq + 1,
         items: [...s.items, { kind: "user", id: `u${seq}`, text: a.text }],
         running: true,
+        pendingPrompt: false,
+        cancelRequested: false,
+        cancellable: true,
         turnStartAt: Date.now(),
         turnTokens: 0,
         turnTotalTokens: 0,
@@ -560,7 +602,8 @@ export function reducer(s: State, a: Action): State {
         discardTurn: false,
       };
     }
-    case "unsend": return { ...s, pendingUser: undefined, discardTurn: true, running: false, live: undefined };
+    case "unsend": return { ...s, pendingUser: undefined, discardTurn: true, running: false, pendingPrompt: false, cancelRequested: true, cancellable: false, approval: undefined, ask: undefined, live: undefined };
+    case "cancel_requested": return { ...s, pendingPrompt: false, cancelRequested: true, approval: undefined, ask: undefined, cancellable: s.running || s.turnActive };
     case "send_failed": {
       if (s.pendingUser === undefined) return s;
       let idx = -1;
@@ -570,18 +613,40 @@ export function reducer(s: State, a: Action): State {
       }
       const items = idx >= 0 ? s.items.map((it, i) => (i === idx ? { ...it, failed: true } : it)) : s.items;
       const notice: Item = { kind: "notice", id: `n${s.seq}`, level: "warn", text: a.error };
-      return { ...s, pendingUser: undefined, running: false, turnActive: false, live: undefined, seq: s.seq + 1, items: [...items, notice] };
+      return { ...s, pendingUser: undefined, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, live: undefined, seq: s.seq + 1, items: [...items, notice] };
     }
     case "backend_status": {
-      if (a.running === s.running) return s;
-      if (a.running) return { ...s, running: true, turnActive: true, turnStartAt: s.turnStartAt || Date.now() };
+      const pendingPrompt = Boolean(a.pendingPrompt);
+      const backgroundJobs = Math.max(0, a.backgroundJobs ?? s.backgroundJobs ?? 0);
+      const cancelRequested = Boolean(a.cancelRequested);
+      const foregroundRunning = foregroundRunningFromRuntimeMeta({ running: a.running, pendingPrompt, backgroundJobs, cancellable: a.cancellable });
+      const cancellable = foregroundRunning;
+      if (
+        foregroundRunning === s.running &&
+        pendingPrompt === s.pendingPrompt &&
+        backgroundJobs === s.backgroundJobs &&
+        cancelRequested === s.cancelRequested &&
+        cancellable === s.cancellable
+      ) return s;
+      if (foregroundRunning) {
+        return {
+          ...s,
+          running: true,
+          turnActive: true,
+          pendingPrompt,
+          backgroundJobs,
+          cancelRequested,
+          cancellable,
+          turnStartAt: s.turnStartAt || Date.now(),
+        };
+      }
       const finalized = s.items.map((it) => {
         if (it.kind === "assistant" && s.live && it.id === s.live.id) return { ...it, text: s.live.text, reasoning: s.live.reasoning, streaming: false };
         if (it.kind === "assistant" && it.streaming) return { ...it, streaming: false };
         if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
         return it;
       });
-      return { ...s, items: finalized, running: false, turnActive: false, live: undefined, currentAssistant: undefined, approval: undefined, ask: undefined };
+      return { ...s, items: finalized, running: false, turnActive: false, pendingPrompt, backgroundJobs, cancelRequested, cancellable, live: undefined, currentAssistant: undefined, approval: undefined, ask: undefined };
     }
     case "meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta };
     case "context": {
@@ -611,9 +676,9 @@ export function reducer(s: State, a: Action): State {
       return { ...s, items: archived, seq };
     }
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
-    case "clearApproval": return { ...s, approval: undefined };
-    case "clearAsk": return { ...s, ask: undefined };
-    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs };
+    case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false };
+    case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false };
+    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }
@@ -768,8 +833,16 @@ export function useController() {
     if (!tab) return undefined;
     const local = statesRef.current.get(tabId);
     const needsInitialLoad = !local?.meta;
-    const missedTurnDone = Boolean(local?.running && !tab.running);
-    dispatchTo(tabId, { type: "backend_status", running: Boolean(tab.running) });
+    const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
+    const missedTurnDone = Boolean(local?.running && !foregroundRunning);
+    dispatchTo(tabId, {
+      type: "backend_status",
+      running: foregroundRunning,
+      pendingPrompt: Boolean(tab.pendingPrompt),
+      backgroundJobs: tab.backgroundJobs ?? 0,
+      cancelRequested: Boolean(tab.cancelRequested),
+      cancellable: foregroundRunning,
+    });
     if (needsInitialLoad || missedTurnDone) {
       await loadSessionDataForTab(tabId, missedTurnDone);
       return tabs;
@@ -927,7 +1000,10 @@ export function useController() {
       }
       return text;
     }
-    if (tabId) app.CancelTab(tabId).catch(() => {});
+    if (tabId) {
+      dispatchTo(tabId, { type: "cancel_requested" });
+      app.CancelTab(tabId).catch(() => {});
+    }
     return undefined;
   }, [activeTabId, dispatchTo]);
 
