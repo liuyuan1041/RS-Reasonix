@@ -162,6 +162,7 @@ export interface AppBindings {
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
+  ProbeGeoEnv(): Promise<string>;
   Capabilities(): Promise<CapabilitiesView>;
   MCPServers(): Promise<ServerView[]>;
   SkillsSettings(): Promise<SkillsSettingsView>;
@@ -2964,6 +2965,9 @@ function makeMockApp(): AppBindings {
           { path: t("mock.changedFile2Path"), sources: ["session"], gitStatus: "added", turns: [6], latestPrompt: t("mock.changedFile2Prompt"), latestTime: now - 60 * 1000 },
         ],
       };
+    },
+    async ProbeGeoEnv() {
+      return '{"gdal":{"status":"unknown"},"qgis":{"status":"unknown"},"gee":{"status":"unknown"}}';
     },
   };
 }
