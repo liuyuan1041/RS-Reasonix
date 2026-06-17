@@ -5,6 +5,8 @@
 // that streams a canned turn through the same contract — letting the whole UI be
 // developed and laid out without rebuilding the Go side.
 
+import type * as GeneratedApp from "../../wailsjs/go/main/App";
+
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
 import { providerRequiresKey } from "./providerModels";
@@ -179,7 +181,6 @@ export interface AppBindings {
   ListDir(rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
-  ProbeGeoEnv(): Promise<string>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   GitBranches(): Promise<string[]>;
   GitCheckout(branch: string): Promise<void>;
@@ -314,9 +315,8 @@ export interface AppBindings {
 // (models.ts) use classes with a convertValues prototype method. The structural
 // mismatch would produce false positives. Method-arity and parameter-order drift
 // are caught at the call sites by tsc when components invoke app.<method>(...).
-// _CheckGenToApp: type-level assert disabled in dev (requires wailsjs generated files).
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export type _CheckGenToApp = never;
+type AssertNever<T extends never> = T;
+export type _CheckGenToApp = AssertNever<Exclude<keyof typeof GeneratedApp, keyof AppBindings>>;
 
 interface WailsRuntime {
   EventsOn(name: string, cb: (...data: unknown[]) => void): () => void;
@@ -2118,14 +2118,6 @@ function makeMockApp(): AppBindings {
         truncated: false,
         binary: false,
       };
-    },
-    async ProbeGeoEnv() {
-      return JSON.stringify({
-        __env_block__: true,
-        gdal: { kind: "ready", version: "3.8.4" },
-        qgis: { kind: "ready", version: "3.34.0" },
-        gee: { kind: "ready", version: "0.1.401" },
-      });
     },
     async WorkspaceChanges(_tabID: string) {
       return {

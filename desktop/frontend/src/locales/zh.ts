@@ -298,15 +298,15 @@ export const zh: Record<DictKey, string> = {
   "caps.hideDiagnostics": "隐藏诊断路径",
 
   // 欢迎 / 空状态
-  "welcome.title": "欢迎使用 RS-Reasonix",
-  "welcome.tagline": "为长会话、低成本而生的遥感 AI 智能体。首次使用？输入 /set 开始配置。",
+  "welcome.title": "一个编码智能体",
+  "welcome.tagline": "描述任务，或随便问点什么。",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用文件",
   "welcome.hintSend": "发送",
-  "welcome.ex1": "分析这幅遥感影像并计算 NDVI",
-  "welcome.ex2": "对 DEM 运行 QGIS 坡度分析",
-  "welcome.ex3": "用 GEE 从 Sentinel-2 影像做地物分类",
-  "welcome.ex4": "从无人机正射影像矢量化建筑轮廓",
+  "welcome.ex1": "讲讲这个代码库的架构",
+  "welcome.ex2": "总结最近的 git 改动",
+  "welcome.ex3": "智能体的运行主循环在哪，它做了什么？",
+  "welcome.ex4": "找出并修复这个项目里的一个 bug",
 
   // 输入框
   "composer.placeholder": "给 Reasonix 发消息…  ( / 命令 · @ 文件 · ! 终端 )",

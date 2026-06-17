@@ -2368,14 +2368,15 @@ func userConfigPath() string {
 	return filepath.Join(dir, "config.toml")
 }
 
-// AppDir is the application data directory name (used for config, sessions,
-// credentials, archive, cache). Changed from "reasonix" to keep RS-Reasonix
-// data separate from upstream Reasonix.
-const AppDir = "rs-reasonix"
-
 func userConfigDir() string {
 	return reasonixHomeDir()
 }
+
+// AppDir is the application data directory name (used for config, sessions,
+// credentials, etc.). Changed from upstream "reasonix" to "rs-reasonix" for
+// the rebranded fork. Migration from the old directory is handled by
+// migrateLegacyAppDir.
+const AppDir = "rs-reasonix"
 
 func reasonixHomeDir() string {
 	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
@@ -2391,7 +2392,7 @@ func reasonixHomeDir() string {
 	if dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, "rs-reasonix")
+	return filepath.Join(dir, "reasonix")
 }
 
 func userConfigLoadPath() string {
@@ -2460,10 +2461,10 @@ func legacyXDGConfigPaths() []string {
 		paths = append(paths, path)
 	}
 	if dir := cleanEnvDir("XDG_CONFIG_HOME"); dir != "" {
-		add(filepath.Join(dir, "rs-reasonix", "config.toml"))
+		add(filepath.Join(dir, "reasonix", "config.toml"))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		add(filepath.Join(home, ".config", "rs-reasonix", "config.toml"))
+		add(filepath.Join(home, ".config", "reasonix", "config.toml"))
 	}
 	return paths
 }
@@ -2480,7 +2481,7 @@ func legacyOSSupportDir() string {
 	if dir == "" {
 		return ""
 	}
-	path := filepath.Join(dir, "rs-reasonix")
+	path := filepath.Join(dir, "reasonix")
 	if current := reasonixHomeDir(); current != "" && samePath(path, current) {
 		return ""
 	}
@@ -2495,7 +2496,7 @@ func userCacheDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "rs-reasonix")
+	return filepath.Join(dir, "reasonix")
 }
 
 func osUserConfigDir() string {

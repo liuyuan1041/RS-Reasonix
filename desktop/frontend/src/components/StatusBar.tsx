@@ -4,7 +4,6 @@ import { Tooltip } from "./Tooltip";
 import { useI18n, type Translator } from "../lib/i18n";
 import { formatMoneyLocalized } from "../lib/money";
 import { normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
-import { GeoStatusDots } from "./geo/GeoStatusDots";
 import { type BalanceInfo, type CollaborationMode, type ContextInfo, type JobView, type ToolApprovalMode, type WireUsage } from "../lib/types";
 
 type StatusBarLabelStyle = "icon" | "text";
@@ -333,9 +332,6 @@ export function StatusBar({
             {node}
           </span>
         ))}
-      </div>
-      <div className="statusbar__group statusbar__group--geo">
-        <GeoStatusDots />
       </div>
       {modeIndicators.length > 0 && <div className="statusbar__group statusbar__group--modes">{modeIndicators}</div>}
       {jobsList.length > 0 && (

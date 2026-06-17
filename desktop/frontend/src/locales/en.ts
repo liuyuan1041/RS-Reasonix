@@ -297,15 +297,15 @@ export const en = {
   "caps.hideDiagnostics": "Hide diagnostic paths",
 
   // welcome / empty state
-  "welcome.title": "Welcome to RS-Reasonix",
-  "welcome.tagline": "A remote-sensing AI agent built for long sessions and low cost. First time? Type /set to configure.",
+  "welcome.title": "A coding agent",
+  "welcome.tagline": "Describe a task, or ask anything.",
   "welcome.hintCommands": "commands",
   "welcome.hintFiles": "reference files",
   "welcome.hintSend": "send",
-  "welcome.ex1": "Analyze this remote sensing raster and compute NDVI",
-  "welcome.ex2": "Run QGIS slope analysis on this DEM",
-  "welcome.ex3": "Classify land cover from Sentinel-2 imagery with GEE",
-  "welcome.ex4": "Vectorize building footprints from drone orthophoto",
+  "welcome.ex1": "Explain this codebase's architecture",
+  "welcome.ex2": "Summarize the recent git changes",
+  "welcome.ex3": "Where is the agent run loop, and what does it do?",
+  "welcome.ex4": "Find and fix a bug in this project",
 
   // composer
   "composer.placeholder": "Message Reasonix…  ( / commands · @ files · ! shell )",

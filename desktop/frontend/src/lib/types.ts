@@ -439,7 +439,7 @@ export interface FilePreview {
   size: number;
   truncated: boolean;
   binary: boolean;
-  kind?: "image" | "pdf" | "geo_raster" | "geo_vector";
+  kind?: "image" | "pdf";
   mime?: string;
   url?: string;
   err?: string;
