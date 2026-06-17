@@ -12,6 +12,8 @@ import {
   Command,
   Download,
   SquarePen,
+  PanelLeft,
+  PanelRight,
   FileDown,
   FileImage,
   FileText,
@@ -19,7 +21,6 @@ import {
   GitBranch,
   History,
   MessageSquare,
-  Plus,
   Settings as SettingsIcon,
   Pencil,
   Trash2,
@@ -31,7 +32,7 @@ import { useToast } from "./lib/toast";
 import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
-import { app, onBuiltInMCPUpdate, onEvent, onProjectTreeChanged } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
@@ -141,10 +142,6 @@ const RIGHT_DOCK_MIN_RENDER_WIDTH = 280;
 const RIGHT_DOCK_MAX_WIDTH = 860;
 
 type RightDockMode = "context" | "files" | "changed";
-type WorkspaceRevealRequest = { id: number; path: string };
-type WorkspaceFileListRequest = { id: number; paths: string[] };
-type WorkspaceChangeListEntry = { key: string; path: string; meta: string; time: string; detail: string };
-type WorkspaceChangeListRequest = { id: number; changes: WorkspaceChangeListEntry[] };
 const SHOW_CONTEXT_DOCK = true;
 type HistoryScopeFilter = { scope: "global" | "project"; workspaceRoot: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
@@ -813,6 +810,7 @@ export default function App() {
     state,
     activeTabId,
     send,
+    sendToTab,
     runShell,
     steer,
     notice,
@@ -863,7 +861,7 @@ export default function App() {
   const [needsOnboarding, setNeedsOnboarding] = useState<boolean | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<SettingsTab | null>(null);
   const [settingsFocus, setSettingsFocus] = useState<SettingsInitialFocus | null>(null);
-  const [desktopLayoutStyle, setDesktopLayoutStyle] = useState<DesktopLayoutStyle>("classic");
+  const [desktopLayoutStyle, setDesktopLayoutStyle] = useState<DesktopLayoutStyle>("workbench");
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -872,9 +870,7 @@ export default function App() {
   const { showToast } = useToast();
   const [sidebarImConnections, setSidebarImConnections] = useState<SidebarImConnection[]>([]);
   const [imTopicSources, setImTopicSources] = useState<Record<string, SidebarImTopicSource>>({});
-  const [activeSidebarImConnectionId, setActiveSidebarImConnectionId] = useState("");
   const [sidebarImDetailConnectionId, setSidebarImDetailConnectionId] = useState("");
-  const [sidebarImExpanded, setSidebarImExpanded] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   type TimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   const [topicTimeFilter, setTopicTimeFilter] = useState<TimeFilter>(() => {
@@ -906,28 +902,9 @@ export default function App() {
     return unsub;
   }, []);
 
-  useEffect(() => {
-    return onBuiltInMCPUpdate((status) => {
-      if (status.name !== "codegraph") return;
-      if (status.phase === "available") {
-        showToast(t("caps.updateToastAvailable", { name: "codegraph", latest: status.latest || "" }));
-      } else if (status.phase === "downloaded") {
-        showToast(t("caps.updateToastDownloaded", { name: "codegraph", latest: status.latest || "" }));
-      } else if (status.phase === "activated") {
-        showToast(t("caps.updateToastActivated", { name: "codegraph", latest: status.latest || "" }));
-      } else if (status.phase === "error") {
-        showToast(t("caps.updateToastError", { name: "codegraph" }), "warn");
-      }
-    });
-  }, [showToast, t]);
-
   const [workspacePanelResizing, setWorkspacePanelResizing] = useState(false);
   const [workspacePanelMaximized, setWorkspacePanelMaximized] = useState(false);
   const [rightDockMode, setRightDockMode] = useState<RightDockMode>("context");
-  const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<WorkspaceRevealRequest | null>(null);
-  const [workspaceChangeRevealRequest, setWorkspaceChangeRevealRequest] = useState<WorkspaceRevealRequest | null>(null);
-  const [workspaceFileListRequest, setWorkspaceFileListRequest] = useState<WorkspaceFileListRequest | null>(null);
-  const [workspaceChangeListRequest, setWorkspaceChangeListRequest] = useState<WorkspaceChangeListRequest | null>(null);
   const [dockRefreshKey, setDockRefreshKey] = useState(0);
   const [projectRevision, setProjectRevision] = useState(0);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
@@ -947,7 +924,6 @@ export default function App() {
   const appRef = useRef<HTMLDivElement>(null);
   const sidebarTogglePressTimerRef = useRef<number | null>(null);
   const workspaceTogglePressTimerRef = useRef<number | null>(null);
-  const sidebarImRefreshRef = useRef({ last: 0, inFlight: false });
 
   // Persist window geometry across launches.
   useWindowStatePersistence();
@@ -969,21 +945,14 @@ export default function App() {
     setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
   }, [t]);
 
-  const quietlyRefreshSidebarImConnections = useCallback(() => {
-    const now = Date.now();
-    if (sidebarImRefreshRef.current.inFlight || now - sidebarImRefreshRef.current.last < 1000) return;
-    sidebarImRefreshRef.current.inFlight = true;
-    sidebarImRefreshRef.current.last = now;
-    void reloadSidebarImConnections()
-      .catch((e) => console.warn("bot sidebar refresh failed", e))
-      .finally(() => {
-        sidebarImRefreshRef.current.inFlight = false;
-      });
-  }, [reloadSidebarImConnections]);
+  const refreshSidebarImConnectionsFromSettings = useCallback(async (settings: Pick<SettingsView, "bot">) => {
+    const runtimeStatus = await loadBotRuntimeStatus();
+    setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t, runtimeStatus));
+    setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
+  }, [t]);
 
   const openBotSettings = useCallback(() => {
     closeTransientOverlays();
-    setSidebarImExpanded(false);
     setSidebarImDetailConnectionId("");
     setSettingsFocus(null);
     setSettingsTarget("bots");
@@ -991,7 +960,6 @@ export default function App() {
 
   const openBotAllowlistSettings = useCallback((connectionId: string) => {
     closeTransientOverlays();
-    setSidebarImExpanded(false);
     setSidebarImDetailConnectionId("");
     setSettingsFocus({ target: "bot-allowlist", connectionId });
     setSettingsTarget("bots");
@@ -1109,14 +1077,6 @@ export default function App() {
   }, [applyDesktopPreferences, t]);
 
   useEffect(() => {
-    if (sidebarImConnections.length === 0) {
-      setSidebarImExpanded(false);
-    }
-    setActiveSidebarImConnectionId((current) => {
-      if (sidebarImConnections.length === 0) return "";
-      if (current && sidebarImConnections.some((connection) => connection.id === current)) return current;
-      return sidebarImConnections[0].id;
-    });
     setSidebarImDetailConnectionId((current) => {
       if (!current) return "";
       return sidebarImConnections.some((connection) => connection.id === current) ? current : "";
@@ -1292,14 +1252,13 @@ export default function App() {
     [patchActiveComposerProfile, syncModeToController],
   );
   const applyCollaborationMode = useCallback(
-    (m: CollaborationMode) => {
+    (m: CollaborationMode): Promise<void> => {
       if (m === "goal") {
         patchActiveComposerProfile({ collaborationMode: "normal", goalDraftMode: true, goal: "" }, ["collaborationMode", "goal"]);
-        void setControllerCollaborationMode("normal");
-        return;
+        return setControllerCollaborationMode("normal");
       }
       patchActiveComposerProfile({ collaborationMode: m, goalDraftMode: false, goal: "" }, ["collaborationMode", "goal"]);
-      void setControllerCollaborationMode(m);
+      return setControllerCollaborationMode(m);
     },
     [patchActiveComposerProfile, setControllerCollaborationMode],
   );
@@ -1852,86 +1811,9 @@ export default function App() {
     openWorkspacePanel("context");
   }, [closeWorkspacePanel, openWorkspacePanel, pulseWorkspaceToggle, workspacePanelRenderable]);
 
-  const clearWorkspaceRequests = useCallback(() => {
-    setWorkspaceRevealRequest(null);
-    setWorkspaceChangeRevealRequest(null);
-    setWorkspaceFileListRequest(null);
-    setWorkspaceChangeListRequest(null);
-  }, []);
-
-  useEffect(() => {
-    clearWorkspaceRequests();
-  }, [activeTabId, clearWorkspaceRequests]);
-
   const openRightDockMode = useCallback(
     (mode: RightDockMode) => {
-      clearWorkspaceRequests();
       openWorkspacePanel(mode);
-    },
-    [clearWorkspaceRequests, openWorkspacePanel],
-  );
-
-  const openRightDockFile = useCallback(
-    (path: string) => {
-      const nextPath = path.trim();
-      if (!nextPath) return;
-      setWorkspaceFileListRequest(null);
-      setWorkspaceChangeListRequest(null);
-      setWorkspaceChangeRevealRequest(null);
-      setWorkspaceRevealRequest((current) => ({ id: (current?.id ?? 0) + 1, path: nextPath }));
-      openWorkspacePanel("files");
-    },
-    [openWorkspacePanel],
-  );
-
-  const openRightDockFileList = useCallback(
-    (paths: string[]) => {
-      const normalized = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)));
-      setWorkspaceRevealRequest(null);
-      setWorkspaceChangeRevealRequest(null);
-      setWorkspaceChangeListRequest(null);
-      setWorkspaceFileListRequest((current) =>
-        normalized.length > 0
-          ? { id: (current?.id ?? 0) + 1, paths: normalized }
-          : null,
-      );
-      openWorkspacePanel("files");
-    },
-    [openWorkspacePanel],
-  );
-
-  const openRightDockChangeFile = useCallback(
-    (path: string) => {
-      const nextPath = path.trim();
-      if (!nextPath) return;
-      setWorkspaceRevealRequest(null);
-      setWorkspaceFileListRequest(null);
-      setWorkspaceChangeListRequest(null);
-      setWorkspaceChangeRevealRequest((current) => ({ id: (current?.id ?? 0) + 1, path: nextPath }));
-      openWorkspacePanel("changed");
-    },
-    [openWorkspacePanel],
-  );
-
-  const openRightDockChangeList = useCallback(
-    (changes: WorkspaceChangeListEntry[]) => {
-      const seen = new Set<string>();
-      const normalized = changes
-        .map((change) => ({ ...change, path: change.path.trim() }))
-        .filter((change) => {
-          if (!change.path || seen.has(change.path)) return false;
-          seen.add(change.path);
-          return true;
-      });
-      setWorkspaceRevealRequest(null);
-      setWorkspaceChangeRevealRequest(null);
-      setWorkspaceFileListRequest(null);
-      setWorkspaceChangeListRequest((current) =>
-        normalized.length > 0
-          ? { id: (current?.id ?? 0) + 1, changes: normalized }
-          : null,
-      );
-      openWorkspacePanel("changed");
     },
     [openWorkspacePanel],
   );
@@ -1970,11 +1852,10 @@ export default function App() {
 
   const handleTabChange = useCallback(async (id: string) => {
     closeTransientOverlays();
-    clearWorkspaceRequests();
     const tabs = await switchTab(id);
     if (tabs) setTabMetas(tabs);
     setTabRevealSignal((signal) => signal + 1);
-  }, [clearWorkspaceRequests, closeTransientOverlays, switchTab]);
+  }, [closeTransientOverlays, switchTab]);
 
   const handleTabClose = useCallback(async (id: string) => {
     closeTransientOverlays();
@@ -2065,19 +1946,18 @@ export default function App() {
     const rs = rewindStateRef.current;
     if (rs) {
       setRewindState(null);
-      try {
-        await rewind(rs.turn, rs.scope);
-        setRewindSignal((v) => v + 1);
-        if (rs.scope === "both") {
-          // Code was only reverted now (deferred), so refresh the dock here.
-          setDockRefreshKey((v) => v + 1);
-          setProjectRevision((v) => v + 1);
-        }
-      } catch {
+      const ok = await rewind(rs.turn, rs.scope);
+      if (!ok) {
         // Rewind failed: the Go conversation is intact, so the cleared
         // optimistic state already shows the full transcript. Don't send —
         // the controller emits a notice with the reason.
         return;
+      }
+      setRewindSignal((v) => v + 1);
+      if (rs.scope === "both") {
+        // Code was only reverted now (deferred), so refresh the dock here.
+        setDockRefreshKey((v) => v + 1);
+        setProjectRevision((v) => v + 1);
       }
     }
     send(displayText, submitText);
@@ -2087,7 +1967,8 @@ export default function App() {
     if (activeTab?.readOnly) return;
     if (scope === "fork") {
       // Fork still goes through the controller (not optimistic).
-      rewind(turn, scope).then(() => {
+      rewind(turn, scope).then((ok) => {
+        if (!ok) return;
         refreshTabMetas();
         setProjectRevision((v) => v + 1);
       });
@@ -2097,9 +1978,11 @@ export default function App() {
     // Code-only rewind only affects files — no message truncation,
     // no optimistic UI needed.  Execute immediately.
     if (scope === "code") {
-      rewind(turn, scope);
-      setDockRefreshKey((v) => v + 1);
-      setProjectRevision((v) => v + 1);
+      rewind(turn, scope).then((ok) => {
+        if (!ok) return;
+        setDockRefreshKey((v) => v + 1);
+        setProjectRevision((v) => v + 1);
+      });
       return;
     }
 
@@ -2119,21 +2002,35 @@ export default function App() {
 
     // Save full items for undo.
     const userItem = items[boundaryIdx]?.kind === "user" ? items[boundaryIdx] as Extract<Item, { kind: "user" }> : undefined;
+    const prompt = userItem?.text ?? "";
     setRewindState({
       turn,
       scope,
       fullItems: items,
       boundaryIdx,
       turnDiff,
-      prompt: userItem?.text ?? "",
+      prompt,
     });
 
     // Fill composer with the rewound-to user message.
     const insertId = Date.now();
-    setComposerInsertRequest({ id: insertId, text: userItem?.text ?? "" });
+    setComposerInsertRequest({ id: insertId, text: prompt, mode: "replace" });
 
     setRewindSignal((v) => v + 1);
   }, [activeTab?.readOnly, state.items, rewind, refreshTabMetas, setComposerInsertRequest]);
+
+  const handleEditPrompt = useCallback(async (turn: number, displayText: string, submitText?: string): Promise<boolean> => {
+    const sourceTabId = activeTabId;
+    if (!sourceTabId || activeTab?.readOnly || rewindStateRef.current || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending) return false;
+    const next = displayText.trim();
+    if (!next) return false;
+    const submit = (submitText ?? displayText).trim();
+    const ok = await rewind(turn, "conversation");
+    if (!ok) return false;
+    setRewindSignal((v) => v + 1);
+    sendToTab(sourceTabId, next, submit);
+    return true;
+  }, [activeTab?.readOnly, activeTabId, clearContextPending, sendToTab, state.approval, state.ask, state.messageAction, state.running, rewind]);
 
   const handleOpenTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string) => {
     closeTransientOverlays();
@@ -2174,22 +2071,6 @@ export default function App() {
       showToast(t("sidebar.imOpenFailed", { name: connection.title }));
     }
   }, [ensureBlankTab, openChannelSession, openGlobalTab, openProjectTab, refreshTabMetas, resumeSession, showToast, t]);
-
-  const selectSidebarImConnection = useCallback((connection: SidebarImConnection) => {
-    setActiveSidebarImConnectionId(connection.id);
-    setSidebarImDetailConnectionId(connection.id);
-    setSidebarImExpanded(false);
-    closeTransientOverlays();
-  }, [closeTransientOverlays]);
-
-  const toggleSidebarImPanel = useCallback(() => {
-    if (sidebarImConnections.length === 0) {
-      openBotSettings();
-      return;
-    }
-    if (!sidebarImExpanded) quietlyRefreshSidebarImConnections();
-    setSidebarImExpanded((value) => !value);
-  }, [openBotSettings, quietlyRefreshSidebarImConnections, sidebarImConnections.length, sidebarImExpanded]);
 
   // History drawer: project menus can open a scoped saved-session list. Idle row
   // clicks resume; running row clicks only preview through PreviewSession.
@@ -2443,94 +2324,13 @@ export default function App() {
   const topicbarSubtitleTitle = sidebarImDetailConnection
     ? [topicbarWorkspaceLabel, topicbarImSourceLabel, sidebarImScopeLabel(sidebarImDetailConnection, t)].filter(Boolean).join(" · ")
     : [topicbarWorkspacePath || topicbarWorkspaceLabel, topicbarImSourceLabel].filter(Boolean).join(" · ");
-  const sidebarImConnectedCount = sidebarImConnections.filter((connection) => connection.status === "connected").length;
-  const sidebarImHasConnections = sidebarImConnections.length > 0;
-  const sidebarImSummaryText = sidebarImHasConnections
-    ? sidebarImConnectedCount > 0
-      ? t("sidebar.imOnlineCount", { n: sidebarImConnectedCount })
-      : t("sidebar.imConnectionCount", { n: sidebarImConnections.length })
-    : "";
-  const sidebarImToggleLabel = !sidebarImHasConnections
-    ? t("sidebar.im")
-    : t(sidebarImExpanded ? "sidebar.imCollapse" : "sidebar.imExpand");
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
+  const workbenchChromeHidden = sidebarWorkbench;
   const sidebarClassName = [
     "sidebar",
     sidebarCollapsed ? "sidebar--collapsed" : "",
     sidebarWorkbench ? "sidebar--workbench" : "",
   ].filter(Boolean).join(" ");
-  const sidebarImBlock = (
-    <div className={`sidebar-im${sidebarImExpanded ? " sidebar-im--expanded" : ""}`} aria-label={t("sidebar.im")}>
-      <button
-        className="sidebar-im__summary"
-        type="button"
-        aria-expanded={sidebarImExpanded}
-        aria-label={sidebarImToggleLabel}
-        title={sidebarImToggleLabel}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          toggleSidebarImPanel();
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          toggleSidebarImPanel();
-        }}
-      >
-        <MessageSquare size={15} />
-        <span className="sidebar-im__summary-label">{t("sidebar.im")}</span>
-        {sidebarImSummaryText ? <span className="sidebar-im__summary-status">{sidebarImSummaryText}</span> : null}
-      </button>
-      {sidebarImExpanded && sidebarImConnections.length > 0 && (
-        <div className="sidebar-im__panel" role="dialog" aria-label={t("sidebar.imManage")}>
-          <div className="sidebar-im__panel-head">
-            <span>{t("sidebar.imManage")}</span>
-            <div className="sidebar-im__panel-actions">
-              <Tooltip label={t("sidebar.imAdd")} fill side="right" disabled={sidebarNavTooltipDisabled}>
-                <button
-                  className="sidebar-im__icon-button"
-                  type="button"
-                  onClick={openBotSettings}
-                  aria-label={t("sidebar.imAdd")}
-                >
-                  <Plus size={13} />
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-          <div className="sidebar-im__list">
-            {sidebarImConnections.map((connection) => (
-              <div
-                key={connection.id}
-                className={[
-                  "sidebar-im-row-shell",
-                  activeSidebarImConnectionId === connection.id ? "sidebar-im-row-shell--active" : "",
-                  `sidebar-im-row-shell--${connection.status}`,
-                ].filter(Boolean).join(" ")}
-              >
-                <button
-                  className="sidebar-im-row"
-                  type="button"
-                  title={`${connection.platformLabel} · ${connection.statusLabel}`}
-                  onClick={() => void selectSidebarImConnection(connection)}
-                >
-                  <span className={`sidebar-im-row__platform sidebar-im-row__platform--${connection.platform}`} aria-hidden="true">
-                    {connection.platform === "qq" ? "Q" : connection.platform === "weixin" ? "微" : connection.platform === "lark" ? "L" : "飞"}
-                  </span>
-                  <span className="sidebar-im-row__main">
-                    <strong>{connection.title}</strong>
-                    <span>{connection.subtitle}</span>
-                  </span>
-                  <span className={`sidebar-im-row__status sidebar-im-row__status--${connection.status}`} title={connection.statusLabel} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   return (
     <ShellExpandProvider>
@@ -2549,6 +2349,7 @@ export default function App() {
         className={[
           "layout",
           sidebarWorkbench ? "layout--workbench" : "",
+          workbenchChromeHidden ? "layout--workbench-chrome-hidden" : "",
           sidebarCollapsed ? "layout--sidebar-collapsed" : "",
           sidebarResizing ? "layout--resizing layout--sidebar-resizing" : "",
           workspacePanelGridOpen ? "layout--workspace-open" : "",
@@ -2559,31 +2360,33 @@ export default function App() {
           .join(" ")}
         style={layoutStyle}
       >
-        <AppChrome
-          platform={desktopPlatform}
-          browserPreviewChrome={browserPreviewChrome}
-          workbenchChrome={sidebarWorkbench}
-          tabs={visibleTabs}
-          activeTabId={visibleTabId}
-          revealActiveSignal={tabRevealSignal}
-          commandCompact={true}
-          sidebarTogglePressed={sidebarTogglePressed}
-          sidebarExpandBlocked={sidebarExpandBlocked}
-          sidebarCollapsed={sidebarCollapsed}
-          sidebarToggleTitle={sidebarToggleTitle}
-          workspacePanelMaximized={workspacePanelMaximized}
-          workspacePanelRenderable={workspacePanelRenderable}
-          workspaceTogglePressed={workspaceTogglePressed}
-          workspacePanelLabel={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
-          onToggleSidebar={toggleSidebar}
-          onToggleWorkspacePanel={toggleWorkspacePanel}
-          onTabChange={(id) => void handleTabChange(id)}
-          onTabClose={(id) => void handleTabClose(id)}
-          onTabsClose={(ids, nextActiveTabId) => void handleTabsClose(ids, nextActiveTabId)}
-          onTabsReorder={(ids) => void handleTabsReorder(ids)}
-          onNewTab={() => void handleNewTab()}
-          onOpenPalette={() => void openPalette()}
-        />
+        {!workbenchChromeHidden && (
+          <AppChrome
+            platform={desktopPlatform}
+            browserPreviewChrome={browserPreviewChrome}
+            workbenchChrome={sidebarWorkbench}
+            tabs={visibleTabs}
+            activeTabId={visibleTabId}
+            revealActiveSignal={tabRevealSignal}
+            commandCompact={true}
+            sidebarTogglePressed={sidebarTogglePressed}
+            sidebarExpandBlocked={sidebarExpandBlocked}
+            sidebarCollapsed={sidebarCollapsed}
+            sidebarToggleTitle={sidebarToggleTitle}
+            workspacePanelMaximized={workspacePanelMaximized}
+            workspacePanelRenderable={workspacePanelRenderable}
+            workspaceTogglePressed={workspaceTogglePressed}
+            workspacePanelLabel={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+            onToggleSidebar={toggleSidebar}
+            onToggleWorkspacePanel={toggleWorkspacePanel}
+            onTabChange={(id) => void handleTabChange(id)}
+            onTabClose={(id) => void handleTabClose(id)}
+            onTabsClose={(ids, nextActiveTabId) => void handleTabsClose(ids, nextActiveTabId)}
+            onTabsReorder={(ids) => void handleTabsReorder(ids)}
+            onNewTab={() => void handleNewTab()}
+            onOpenPalette={() => void openPalette()}
+          />
+        )}
         <a className="skip-to-composer" href="#composer-input">
           {t("shortcuts.skipToComposer")}
         </a>
@@ -2652,7 +2455,6 @@ export default function App() {
 
           {sidebarWorkbench ? (
             <nav className="sidebar__nav sidebar__nav--footer">
-              {sidebarImBlock}
               <div className="sidebar__utility-row" aria-label={t("sidebar.utilityActions")}>
                 <Tooltip label={t("sidebar.allHistory")} fill side="top">
                   <button
@@ -2691,7 +2493,6 @@ export default function App() {
             </nav>
           ) : (
             <nav className="sidebar__nav">
-              {sidebarImBlock}
               <Tooltip label={t("sidebar.allHistory")} fill side="right" disabled={sidebarNavTooltipDisabled}>
                 <button
                   className="sidebar__navitem"
@@ -2743,6 +2544,24 @@ export default function App() {
         <section className="chat-pane">
           <>
           <header className="topicbar">
+            {workbenchChromeHidden && (
+              <Tooltip label={sidebarToggleTitle}>
+                <button
+                  className={[
+                    "topicbar__chrome-btn",
+                    sidebarExpandBlocked ? "topicbar__chrome-btn--blocked" : "",
+                    sidebarTogglePressed ? "topicbar__chrome-btn--pressed" : "",
+                  ].filter(Boolean).join(" ")}
+                  type="button"
+                  onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
+                  aria-label={sidebarToggleTitle}
+                  aria-pressed={!sidebarCollapsed}
+                  aria-disabled={sidebarExpandBlocked}
+                >
+                  <PanelLeft size={15} />
+                </button>
+              </Tooltip>
+            )}
             <div className="topicbar__identity">
               <div className="topicbar__title-row">
                 {topicbarEditing ? (
@@ -2793,6 +2612,24 @@ export default function App() {
             </div>
             <div className="topicbar__spacer" />
             <div className="topicbar__actions">
+              {workbenchChromeHidden && (
+                <Tooltip label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}>
+                  <button
+                    className={[
+                      "topicbar__chrome-btn",
+                      "topicbar__chrome-btn--workspace",
+                      workspacePanelRenderable ? "topicbar__chrome-btn--active" : "",
+                      workspaceTogglePressed ? "topicbar__chrome-btn--pressed" : "",
+                    ].filter(Boolean).join(" ")}
+                    type="button"
+                    onClick={toggleWorkspacePanel}
+                    aria-label={workspacePanelRenderable ? t("rightDock.collapse") : t("rightDock.expand")}
+                    aria-pressed={workspacePanelRenderable}
+                  >
+                    <PanelRight size={15} />
+                  </button>
+                </Tooltip>
+              )}
               {!sidebarImDetailConnection && (
               <>
               <Tooltip label={t("topicBar.copyAll")}>
@@ -2907,10 +2744,11 @@ export default function App() {
                 tabId={activeTabId}
                 footerHeight={footerHeight}
                 onPrompt={commitThenSend}
+                onEditPrompt={handleEditPrompt}
                 onRewind={handleMessageAction}
                 checkpoints={state.checkpoints}
                 actionPending={state.messageAction != null}
-                rewindDisabled={Boolean(activeTab?.readOnly) || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
+                rewindDisabled={Boolean(activeTab?.readOnly) || rewindState != null || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
                 running={state.running}
                 rewindSignal={rewindSignal}
               />
@@ -2928,7 +2766,7 @@ export default function App() {
                   filesRemoved: [],
                   onUndo: () => {
                     setRewindState(null);
-                    setComposerInsertRequest({ id: Date.now(), text: "" });
+                    setComposerInsertRequest({ id: Date.now(), text: "", mode: "replace" });
                   },
                 }}
               />
@@ -2937,18 +2775,19 @@ export default function App() {
               <ApprovalModal
                 key={state.approval.id}
                 approval={state.approval}
-                onAnswer={(allow, session, persist) => {
-                  // Approving an exit_plan_mode plan leaves plan mode; sync the
-                  // tab-local indicator and persisted safe mode immediately.
-                  if (state.approval!.tool === "exit_plan_mode" && allow) applyCollaborationMode("normal");
+                onAnswer={async (allow, session, persist) => {
+                  // Approving an exit_plan_mode plan leaves plan mode; await the
+                  // mode switch before sending the approval so the controller
+                  // observes the updated state before it unblocks.
+                  if (state.approval!.tool === "exit_plan_mode" && allow) await applyCollaborationMode("normal");
                   approve(state.approval!.id, allow, session, persist);
                 }}
                 onRevisePlan={(text) => {
                   setPendingPlanRevision(text);
                   approve(state.approval!.id, false, false, false);
                 }}
-                onExitPlan={() => {
-                  applyCollaborationMode("normal");
+                onExitPlan={async () => {
+                  await applyCollaborationMode("normal");
                   approve(state.approval!.id, false, false, false);
                 }}
                 onStop={() => {
@@ -3103,11 +2942,6 @@ export default function App() {
                   sessionCurrency={state.sessionCurrency}
                   sessionGen={state.sessionGen}
                   refreshKey={dockRefreshKey}
-                  onOpenWorkspaceMode={openRightDockMode}
-                  onOpenWorkspaceFile={openRightDockFile}
-                  onOpenWorkspaceFileList={openRightDockFileList}
-                  onOpenWorkspaceChangeList={openRightDockChangeList}
-                  onOpenWorkspaceChangeFile={openRightDockChangeFile}
                 />
               ) : (
                 <WorkspacePanel
@@ -3126,10 +2960,6 @@ export default function App() {
                   onRequestPanelWidth={ensureWorkspacePanelWidth}
                   refreshKey={dockRefreshKey}
                   initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
-                  revealPathRequest={workspaceRevealRequest}
-                  changeRevealRequest={workspaceChangeRevealRequest}
-                  fileListRequest={workspaceFileListRequest}
-                  changeListRequest={workspaceChangeListRequest}
                   showViewTabs={false}
                 />
               )}
@@ -3163,8 +2993,13 @@ export default function App() {
             setSettingsFocus(null);
             setSettingsTarget(null);
           }}
-          onChanged={() => {
+          onChanged={(settings) => {
             void refreshMeta();
+            if (settings) {
+              applyDesktopPreferences(settings);
+              void refreshSidebarImConnectionsFromSettings(settings).catch((e) => console.warn("bot sidebar refresh failed", e));
+              return;
+            }
             void reloadSidebarImConnections().catch((e) => console.warn("bot sidebar refresh failed", e));
             void app.Settings()
               .then(applyDesktopPreferences)

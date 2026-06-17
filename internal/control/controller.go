@@ -31,9 +31,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
-	"reasonix/internal/builtinmcp"
 	"reasonix/internal/checkpoint"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/diff"
@@ -65,6 +63,7 @@ type Controller struct {
 	policy   permission.Policy
 
 	label             string
+	modelRef          string
 	systemPrompt      string
 	sessionDir        string
 	host              *plugin.Host
@@ -198,6 +197,10 @@ type pendingAsk struct {
 	reply     chan []event.AskAnswer
 }
 
+type plannerSessionResetter interface {
+	ResetPlannerSession()
+}
+
 // RuntimeStatus is the frontend-facing snapshot of foreground turn state. It is
 // intentionally more explicit than the legacy Running bool so UI code can
 // distinguish a cancellable foreground turn from pending prompts and background
@@ -244,6 +247,7 @@ type Options struct {
 	Sink          event.Sink
 	Policy        permission.Policy
 	Label         string
+	ModelRef      string
 	SystemPrompt  string
 	SessionDir    string
 	SessionPath   string
@@ -287,6 +291,9 @@ type Options struct {
 	// persist to disk (e.g. "Bash(go test:*)"). The callback is wired into the
 	// permission Gate on EnableInteractiveApproval.
 	OnRemember func(rule string) RememberResult
+	// PlanModeAllowedTools names tools exempt from the plan-mode read-only gate.
+	// Passed through to the executor agent so user-configured exceptions work.
+	PlanModeAllowedTools []string
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -309,6 +316,7 @@ func New(opts Options) *Controller {
 		sink:                   sink,
 		policy:                 opts.Policy,
 		label:                  opts.Label,
+		modelRef:               opts.ModelRef,
 		systemPrompt:           opts.SystemPrompt,
 		sessionDir:             opts.SessionDir,
 		sessionPath:            opts.SessionPath,
@@ -1397,6 +1405,9 @@ func (c *Controller) SetPlanMode(v bool) {
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
 	}
+	if setter, ok := c.runner.(interface{ SetPlanMode(bool) }); ok {
+		setter.SetPlanMode(v)
+	}
 }
 
 // SetAutoPlan updates the interactive auto-plan gate for subsequent turns.
@@ -1516,6 +1527,7 @@ func (c *Controller) NewSession() error {
 	}
 	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.resetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
@@ -1553,6 +1565,7 @@ func (c *Controller) ClearSession() error {
 	}
 	c.setActiveJobSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
+	c.resetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
 	c.mu.Lock()
 	c.startedOnce = true
@@ -1573,6 +1586,9 @@ func (c *Controller) ClearSession() error {
 func removeSessionArtifacts(path string) error {
 	if path == "" {
 		return nil
+	}
+	if err := jobs.RemoveArtifacts(path); err != nil {
+		return err
 	}
 	for _, p := range []string{path, agent.BranchMetaPath(path)} {
 		if p == "" {
@@ -1742,6 +1758,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 	}
 	if switchToFork {
 		c.executor.SetSession(sess)
+		c.resetPlannerSession()
 		c.mu.Lock()
 		c.sessionPath = newPath
 		c.mu.Unlock()
@@ -1807,6 +1824,7 @@ func (c *Controller) Branch(name string) (string, error) {
 		return "", c.rewindFail(err)
 	}
 	c.executor.SetSession(sess)
+	c.resetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = newPath
 	c.mu.Unlock()
@@ -1854,6 +1872,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if c.executor != nil {
 		c.executor.SetSession(loaded)
 	}
+	c.resetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = match.Path
 	c.mu.Unlock()
@@ -1953,12 +1972,20 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	if c.executor != nil {
 		c.executor.SetSession(s)
 	}
+	c.resetPlannerSession()
 	c.mu.Lock()
 	c.sessionPath = path
 	c.mu.Unlock()
 	c.setActiveJobSession(path)
 	c.rebindCheckpoints(path)
 	c.maybeColdResumePrune(path)
+}
+
+func (c *Controller) resetPlannerSession() {
+	runner, ok := c.runner.(plannerSessionResetter)
+	if ok {
+		runner.ResetPlannerSession()
+	}
 }
 
 // cacheColdAfter approximates how long the provider keeps a prompt prefix
@@ -2043,6 +2070,7 @@ func (c *Controller) autosaveWhileRunning(ctx context.Context) {
 func (c *Controller) snapshot(markActivity bool) error {
 	c.mu.Lock()
 	path := c.sessionPath
+	modelRef := c.modelRef
 	c.mu.Unlock()
 	if c.executor == nil || path == "" {
 		return nil
@@ -2058,6 +2086,11 @@ func (c *Controller) snapshot(markActivity bool) error {
 	}
 	if err := s.Save(path); err != nil {
 		return err
+	}
+	if strings.TrimSpace(modelRef) != "" {
+		if err := agent.SetBranchModelPreserveUpdated(path, modelRef); err != nil {
+			return err
+		}
 	}
 	if markActivity {
 		return agent.TouchBranchMeta(path)
@@ -2133,7 +2166,7 @@ func (c *Controller) IsDestroyingSession(sessionPath string) bool {
 
 func (c *Controller) setActiveJobSession(sessionPath string) {
 	if c.jobs != nil {
-		c.jobs.SetActiveSession(agent.BranchID(sessionPath))
+		c.jobs.SetActiveSessionPath(agent.BranchID(sessionPath), sessionPath)
 	}
 }
 
@@ -2369,7 +2402,7 @@ func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
 
 func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
 	exp := e.ExpandedPlugin()
-	return c.connectMCPSpec(plugin.Spec{
+	return c.connectMCPSpec(plugin.ApplyKnownOverrides(plugin.Spec{
 		Name:    exp.Name,
 		Type:    exp.Type,
 		Command: exp.Command,
@@ -2377,7 +2410,7 @@ func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
 		Env:     exp.Env,
 		URL:     exp.URL,
 		Headers: exp.Headers,
-	})
+	}, c.WorkspaceRoot()))
 }
 
 func (c *Controller) connectMCPSpec(s plugin.Spec) (int, error) {
@@ -2488,60 +2521,7 @@ func (c *Controller) ConnectConfiguredMCPServer(name string) (int, error) {
 			return c.connectMCPServer(p)
 		}
 	}
-	if name == "codegraph" {
-		return c.connectCodegraphMCPServer(cfg)
-	}
-	if p, ok := builtinmcp.Entry(name); ok {
-		return c.connectMCPServer(p)
-	}
 	return 0, fmt.Errorf("no configured MCP server named %q", name)
-}
-
-// ConnectCodegraphMCPServer connects the built-in CodeGraph server using an
-// already-resolved config. Desktop uses this after saving user-level settings so
-// a stale project config cannot override the just-applied choice.
-func (c *Controller) ConnectCodegraphMCPServer(cfg *config.Config) (int, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return 0, err
-	}
-	return c.ConnectCodegraphMCPServerForRoot(cfg, cwd)
-}
-
-// ConnectCodegraphMCPServerForRoot connects CodeGraph pinned to root. Desktop
-// project tabs use this after hot updates so a reconnect keeps the same project
-// scope as boot-time CodeGraph startup.
-func (c *Controller) ConnectCodegraphMCPServerForRoot(cfg *config.Config, root string) (int, error) {
-	return c.connectCodegraphMCPServerForRoot(cfg, root)
-}
-
-func (c *Controller) connectCodegraphMCPServer(cfg *config.Config) (int, error) {
-	return c.ConnectCodegraphMCPServer(cfg)
-}
-
-func (c *Controller) connectCodegraphMCPServerForRoot(cfg *config.Config, root string) (int, error) {
-	if !cfg.Codegraph.Enabled {
-		return 0, fmt.Errorf("codegraph is disabled in config")
-	}
-	bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-	if !ok {
-		return 0, fmt.Errorf("codegraph is not installed")
-	}
-	root = strings.TrimSpace(root)
-	if root == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return 0, err
-		}
-		root = cwd
-	}
-	if !codegraph.IndexableRoot(root) {
-		return 0, fmt.Errorf("codegraph: refusing to index %q — a filesystem root would index the whole volume", root)
-	}
-	if err := codegraph.EnsureInit(c.pluginCtx, bin, root); err != nil {
-		return 0, fmt.Errorf("codegraph init: %w", err)
-	}
-	return c.connectMCPSpec(codegraph.MCPSpec(bin, root))
 }
 
 // RemoveMCPServer disconnects a live MCP server — its tools vanish from the next

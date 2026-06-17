@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/builtinmcp"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -33,6 +31,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/lsp"
 	"reasonix/internal/memory"
+	"reasonix/internal/migration"
 	"reasonix/internal/netclient"
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
@@ -96,7 +95,7 @@ type Options struct {
 	ExtraPlugins []plugin.Spec
 	// TokenMode selects how much optional context/tool surface this session exposes
 	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
-	// the core coding tools visible and moves skills, MCP, CodeGraph, LSP, web_fetch,
+	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
 	// install_source, and task behind connect_tool_source.
 	TokenMode string
 	// SessionDir overrides where persisted chat transcripts are written. When
@@ -133,6 +132,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
+	modelRef := entry.Name + "/" + entry.Model
 	if opts.EffortOverride != nil {
 		entry.Effort = *opts.EffortOverride
 		if entry.Kind == "anthropic" && strings.TrimSpace(entry.Effort) != "" && strings.TrimSpace(entry.Thinking) == "" {
@@ -156,12 +156,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	} else if migrated != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
 	}
-	migrateLegacySessionSources(sink)
+	migration.MigrateLegacyMemorySources(sink)
+	migration.MigrateLegacySessionSources(sink)
 
 	// A resolvable model whose API key env is unset would otherwise build fine
 	// (RequireKey is false so the UI stays reachable) and then fail silently on the
 	// first request, showing as an empty/dead model. Surface the cause up front.
-	if !opts.RequireKey && entry.APIKeyEnv != "" && entry.APIKey() == "" {
+	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
 		sink.Emit(event.Event{Kind: event.Notice, Text: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
 	}
 	jm := jobs.NewManager(sink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
@@ -251,12 +252,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// Partition configured plugins by tier so eager/lazy/background can each
 	// take the path that fits them. User entries default to background: the
 	// session starts immediately while enabled MCP servers warm up.
-	autoStartEntries := builtinmcp.AppendEnabled(cfg.AutoStartPlugins(), cfg.Plugins, cfg.BuiltInMCP.EnabledNames(), pluginSpecNames(opts.ExtraPlugins)...)
+	autoStartEntries := cfg.AutoStartPlugins()
 	eagerEntries, lazyEntries, bgEntries := partitionByTier(autoStartEntries)
+	extraSpecs := applyKnownPluginOverrides(opts.ExtraPlugins, root)
 	onDemandMCPSpecs := map[string]plugin.Spec{}
 	onDemandMCPNames := []string{}
 	if tokenEconomy {
-		for _, spec := range append(PluginSpecs(autoStartEntries), opts.ExtraPlugins...) {
+		for _, spec := range append(PluginSpecsForRoot(autoStartEntries, root), extraSpecs...) {
 			name := strings.TrimSpace(spec.Name)
 			if name == "" {
 				continue
@@ -287,65 +289,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	eagerEntries = kept
 
-	eagerSpecs := PluginSpecs(eagerEntries)
-	lazySpecs := PluginSpecs(lazyEntries)
-	bgSpecs := PluginSpecs(bgEntries)
+	eagerSpecs := PluginSpecsForRoot(eagerEntries, root)
+	lazySpecs := PluginSpecsForRoot(lazyEntries, root)
+	bgSpecs := PluginSpecsForRoot(bgEntries, root)
 
-	// CodeGraph is a built-in MCP server fetched on first use. When it resolves,
-	// inject it as one more stdio plugin pinned to the project root (it is
-	// cwd-aware); EnsureInit only creates .codegraph/ (fast, size-independent),
-	// serve's daemon then indexes in the background, so startup never blocks even
-	// on a large repo. When it is not yet installed, fetch it in the background
-	// (one-time, ~45MB) if auto_install is on — startup still never blocks, the
-	// tools come online next session — otherwise point the user at the explicit
-	// install command. A failed init or fetch is a notice, not fatal.
-	//
-	// CodeGraph is fixed to background startup. Legacy tier values are ignored so
-	// enabling it never blocks chat startup.
-	if cfg.Codegraph.Enabled && !tokenEconomy {
-		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-		switch {
-		case ok && !codegraph.IndexableRoot(root):
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text: "codegraph: project root is a filesystem root — skipped to avoid indexing the whole volume"})
-		case ok:
-			spec := codegraph.MCPSpec(bin, root)
-			warm := codegraph.Initialized(root)
-			if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
-				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
-				break
-			}
-			bgNotice := func() {
-				if !warm {
-					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-						Text: "codegraph: preparing code-intelligence tools in the background — tools will appear when ready"})
-				}
-			}
-			bgSpecs = append(bgSpecs, spec)
-			bgNotice()
-		case cfg.Codegraph.AutoInstall:
-			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
-			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
-			codegraphClient, err := netclient.NewHTTPClient(proxySpec, netclient.TransportOptions{})
-			if err != nil {
-				notify("codegraph: install skipped (" + err.Error() + ")")
-			} else {
-				go func() {
-					if _, err := codegraph.InstallWithClient(context.WithoutCancel(ctx), codegraphClient, nil); err != nil {
-						notify("codegraph: install failed (" + err.Error() + ") — using grep/glob; retries next session")
-					} else {
-						notify("codegraph: installed — symbol-graph tools available next session")
-					}
-				}()
-			}
-		default:
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-				Text: "codegraph: not installed — run `reasonix codegraph install` to enable symbol-graph tools"})
-		}
-	}
 	if !tokenEconomy {
-		eagerSpecs = append(eagerSpecs, opts.ExtraPlugins...)
+		eagerSpecs = append(eagerSpecs, extraSpecs...)
 	}
 
 	// Apply caller-supplied stderr override to every spec across tiers.
@@ -391,28 +340,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	registerDeferred(lazySpecs, false)
 	registerDeferred(bgSpecs, true)
-
-	// Inject codegraph steering into the system prompt when symbol-graph tools
-	// are available, so the model knows to prefer them for architecture / call-graph
-	// questions over grep/read_file. Also register codegraph tool names in the
-	// subagent allowed-tools list so explore/research/review can use them.
-	if cfg.Codegraph.Enabled {
-		prefix := plugin.ToolPrefix("codegraph")
-		var cgTools []string
-		for _, name := range reg.Names() {
-			if strings.HasPrefix(name, prefix) {
-				cgTools = append(cgTools, name)
-			}
-		}
-		if len(cgTools) > 0 {
-			sysPrompt += "\n\n" + codegraph.SteerText
-			skill.SetExtraReadTools(cgTools)
-		} else {
-			skill.SetExtraReadTools(nil)
-		}
-	} else {
-		skill.SetExtraReadTools(nil)
-	}
 
 	for _, msg := range demoteMessages {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg})
@@ -555,6 +482,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// task/skill meta-tools, to bar recursion), and an optional per-skill model.
 	// Its tool activity nests under the invoking call, like `task`.
 	skillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
+		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
 		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
 		modelRef := subagentModelRef(cfg, sk)
 		effortRef := subagentEffortRef(cfg, sk)
@@ -680,16 +608,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			ProjectRoot: root,
 			HTTPClient:  balanceClient,
 			ConnectMCP: func(e config.PluginEntry) (installsource.MCPConnectResult, error) {
-				exp := e.ExpandedPlugin()
-				spec := plugin.Spec{
-					Name:    exp.Name,
-					Type:    exp.Type,
-					Command: exp.Command,
-					Args:    exp.Args,
-					Env:     exp.Env,
-					URL:     exp.URL,
-					Headers: exp.Headers,
-				}
+				spec := pluginSpecFromEntry(e, root)
 				if opts.Stderr != nil {
 					spec.Stderr = opts.Stderr
 				}
@@ -782,32 +701,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				}
 				return "enabled " + strings.Join(names, ", ") + ".", nil
 			},
-			codegraph: func(context.Context) (string, error) {
-				if !cfg.Codegraph.Enabled {
-					return "", fmt.Errorf("codegraph is disabled in config")
-				}
-				bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-				if !ok {
-					return "", fmt.Errorf("codegraph is not installed")
-				}
-				if !codegraph.IndexableRoot(root) {
-					return "", fmt.Errorf("codegraph: project root is a filesystem root — skipped to avoid indexing the whole volume")
-				}
-				if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
-					return "", fmt.Errorf("codegraph init: %w", err)
-				}
-				spec := codegraph.MCPSpec(bin, root)
-				if opts.Stderr != nil {
-					spec.Stderr = opts.Stderr
-				}
-				tools, err := pluginHost.Add(ctx, spec)
-				if err != nil {
-					return "", err
-				}
-				reg.RemovePrefix(plugin.ToolPrefix(spec.Name))
-				names := addTools(reg, tools)
-				return "enabled codegraph tools: " + strings.Join(names, ", ") + ".", nil
-			},
 			mcp: func(_ context.Context, name string) (string, error) {
 				spec, ok := onDemandMCPSpecs[name]
 				if !ok {
@@ -833,21 +726,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	execSess := agent.NewSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:          maxSteps,
-		Temperature:       cfg.Agent.Temperature,
-		Pricing:           entry.Price,
-		Gate:              headlessGate,
-		Hooks:             hookRunner,
-		Jobs:              jm,
-		ProjectChecks:     projectChecks,
-		ContextWindow:     entry.ContextWindow,
-		SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
-		CompactRatio:      cfg.Agent.CompactRatio,
-		CompactForceRatio: cfg.Agent.CompactForceRatio,
-		RecentKeep:        cfg.Agent.RecentKeep,
-		ArchiveDir:        config.ArchiveDir(),
-		KeepPolicy:        keepPolicy,
-		ReasoningLanguage: cfg.ReasoningLanguage(),
+		MaxSteps:             maxSteps,
+		Temperature:          cfg.Agent.Temperature,
+		Pricing:              entry.Price,
+		Gate:                 headlessGate,
+		Hooks:                hookRunner,
+		Jobs:                 jm,
+		ProjectChecks:        projectChecks,
+		ContextWindow:        entry.ContextWindow,
+		SoftCompactRatio:     cfg.Agent.SoftCompactRatio,
+		CompactRatio:         cfg.Agent.CompactRatio,
+		CompactForceRatio:    cfg.Agent.CompactForceRatio,
+		RecentKeep:           cfg.Agent.RecentKeep,
+		ArchiveDir:           config.ArchiveDir(),
+		KeepPolicy:           keepPolicy,
+		ReasoningLanguage:    cfg.ReasoningLanguage(),
+		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
 	}, sink)
 
 	var runner agent.Runner = executor
@@ -905,6 +799,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Sink:                   sink,
 		Policy:                 policy,
 		Label:                  label,
+		ModelRef:               modelRef,
 		SystemPrompt:           sysPrompt,
 		SessionDir:             sessionDir,
 		Host:                   pluginHost,
@@ -927,6 +822,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ReasoningLanguage:      cfg.ReasoningLanguage(),
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
+		PlanModeAllowedTools:   cfg.Agent.PlanModeAllowedTools,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},
@@ -935,49 +831,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ctrlOpts.Classifier = classifier
 	}
 	return control.New(ctrlOpts), nil
-}
-
-func migrateLegacySessionSources(sink event.Sink) {
-	dest := config.SessionDir()
-	if strings.TrimSpace(dest) == "" {
-		return
-	}
-	type legacySource struct {
-		dir     string
-		label   string
-		migrate func(srcDir, globalDest string, projectDir func(string) string) (int, error)
-	}
-	var sources []legacySource
-	if home, herr := os.UserHomeDir(); herr == nil {
-		sources = append(sources, legacySource{
-			dir:     filepath.Join(home, ".reasonix", "sessions"),
-			label:   "~/.reasonix/sessions",
-			migrate: agent.MigrateLegacySessions,
-		})
-	}
-	// Back-fill v0.x sessions from the current user config session directory as
-	// well. This covers users whose platform config root was redirected before the
-	// Go rewrite; their event logs can already live where v2 stores sessions.
-	sources = append(sources, legacySource{
-		dir:     dest,
-		label:   dest,
-		migrate: agent.MigrateLegacySessionsFromConfigDir,
-	})
-
-	seen := map[string]bool{}
-	for _, src := range sources {
-		if strings.TrimSpace(src.dir) == "" {
-			continue
-		}
-		key := filepath.Clean(src.dir)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		if n, serr := src.migrate(src.dir, dest, config.ProjectSessionDir); serr == nil && n > 0 {
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("imported %d past session(s) from %s — resume them with --resume or the history panel", n, src.label)})
-		}
-	}
 }
 
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {
@@ -1200,6 +1053,7 @@ func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
 // NewProviderWithProxy builds a provider.Provider with the configured ordinary
 // network proxy settings.
 func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (provider.Provider, error) {
+	keyResolution := config.ResolveCredential(e.APIKeyEnv)
 	return provider.New(e.Kind, provider.Config{
 		Name:    e.Name,
 		BaseURL: e.BaseURL,
@@ -1210,6 +1064,7 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 		// default_effort when the user has not explicitly selected /effort.
 		Extra: map[string]any{
 			"api_key_env":        e.APIKeyEnv,
+			"api_key_source":     keyResolution.Source.Label,
 			"thinking":           e.Thinking,
 			"effort":             config.EffectiveEffort(e),
 			"reasoning_protocol": config.ReasoningProtocolForEntry(e),
@@ -1298,28 +1153,38 @@ func partitionByTier(entries []config.PluginEntry) (eager, lazy, bg []config.Plu
 // references. Exported so custom assemblers can connect the config's plugins
 // alongside their own (e.g. ACP's per-session MCP servers).
 func PluginSpecs(entries []config.PluginEntry) []plugin.Spec {
+	return PluginSpecsForRoot(entries, "")
+}
+
+// PluginSpecsForRoot maps configured plugin entries to plugin.Spec and applies
+// workspace-aware compatibility overrides for known cwd-sensitive servers.
+func PluginSpecsForRoot(entries []config.PluginEntry, workspaceRoot string) []plugin.Spec {
 	specs := make([]plugin.Spec, len(entries))
 	for i, e := range entries {
-		e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
-		specs[i] = plugin.Spec{
-			Name:    e.Name,
-			Type:    e.Type,
-			Command: e.Command,
-			Args:    e.Args,
-			Env:     e.Env,
-			URL:     e.URL,
-			Headers: e.Headers,
-		}
+		specs[i] = pluginSpecFromEntry(e, workspaceRoot)
 	}
 	return specs
 }
 
-func pluginSpecNames(specs []plugin.Spec) []string {
-	names := make([]string, 0, len(specs))
-	for _, s := range specs {
-		names = append(names, s.Name)
+func pluginSpecFromEntry(e config.PluginEntry, workspaceRoot string) plugin.Spec {
+	e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
+	return plugin.ApplyKnownOverrides(plugin.Spec{
+		Name:    e.Name,
+		Type:    e.Type,
+		Command: e.Command,
+		Args:    e.Args,
+		Env:     e.Env,
+		URL:     e.URL,
+		Headers: e.Headers,
+	}, workspaceRoot)
+}
+
+func applyKnownPluginOverrides(specs []plugin.Spec, workspaceRoot string) []plugin.Spec {
+	out := make([]plugin.Spec, len(specs))
+	for i, spec := range specs {
+		out[i] = plugin.ApplyKnownOverrides(spec, workspaceRoot)
 	}
-	return names
+	return out
 }
 
 // autoShellPrefer reports whether [tools.shell] left the interpreter to

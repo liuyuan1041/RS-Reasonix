@@ -7,13 +7,13 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -40,28 +40,27 @@ func SkillNameKey(name string) string {
 
 // Config is Reasonix's runtime configuration.
 type Config struct {
-	ConfigVersion     int                     `toml:"config_version"`
-	DefaultModel      string                  `toml:"default_model"`
-	Language          string                  `toml:"language"` // ui/model language tag (e.g. "zh"); empty = auto-detect from $LANG / $REASONIX_LANG
-	UI                UIConfig                `toml:"ui"`
-	Desktop           DesktopConfig           `toml:"desktop"`
-	Notifications     NotificationsConfig     `toml:"notifications"`
-	Agent             AgentConfig             `toml:"agent"`
-	Providers         []ProviderEntry         `toml:"providers"`
-	Tools             ToolsConfig             `toml:"tools"`
-	Permissions       PermissionsConfig       `toml:"permissions"`
-	Sandbox           SandboxConfig           `toml:"sandbox"`
-	Network           NetworkConfig           `toml:"network"`
-	Plugins           []PluginEntry           `toml:"plugins"`
-	Skills            SkillsConfig            `toml:"skills"`
-	Codegraph         CodegraphConfig         `toml:"codegraph"`
-	BuiltInMCP        BuiltInMCPConfig        `toml:"builtin_mcp"`
-	BuiltInMCPUpdates BuiltInMCPUpdatesConfig `toml:"builtin_mcp_updates"`
-	Statusline        StatuslineConfig        `toml:"statusline"`
-	LSP               LSPConfig               `toml:"lsp"`
-	Bot               BotConfig               `toml:"bot"`
+	ConfigVersion    int                 `toml:"config_version"`
+	DefaultModel     string              `toml:"default_model"`
+	Language         string              `toml:"language"` // ui/model language tag (e.g. "zh"); empty = auto-detect from $LANG / $REASONIX_LANG
+	CredentialsStore string              `toml:"credentials_store"`
+	UI               UIConfig            `toml:"ui"`
+	Desktop          DesktopConfig       `toml:"desktop"`
+	Notifications    NotificationsConfig `toml:"notifications"`
+	Agent            AgentConfig         `toml:"agent"`
+	Providers        []ProviderEntry     `toml:"providers"`
+	Tools            ToolsConfig         `toml:"tools"`
+	Permissions      PermissionsConfig   `toml:"permissions"`
+	Sandbox          SandboxConfig       `toml:"sandbox"`
+	Network          NetworkConfig       `toml:"network"`
+	Plugins          []PluginEntry       `toml:"plugins"`
+	Skills           SkillsConfig        `toml:"skills"`
+	Statusline       StatuslineConfig    `toml:"statusline"`
+	LSP              LSPConfig           `toml:"lsp"`
+	Bot              BotConfig           `toml:"bot"`
 
-	providerSources map[string]providerSourceScope
+	providerSources          map[string]providerSourceScope
+	shadowedProjectProviders []ProviderEntry
 }
 
 type providerSourceScope string
@@ -95,7 +94,7 @@ type DesktopConfig struct {
 	StatusBarItems []string `toml:"status_bar_items"` // ordered visible desktop status bar items
 	CheckUpdates   *bool    `toml:"check_updates"`    // startup update checks; nil keeps the default enabled
 	Telemetry      *bool    `toml:"telemetry"`        // anonymous launch ping (install id + version + OS); nil keeps the default enabled
-	Metrics        *bool    `toml:"metrics"`          // opt-in aggregate agent metrics (anonymous signal/bucket counts; no content); nil = disabled
+	Metrics        *bool    `toml:"metrics"`          // aggregate desktop metrics (anonymous signal/bucket counts; no content); nil keeps the default enabled
 	ProviderAccess []string `toml:"provider_access"`  // desktop-only list of provider entries shown in Settings > Model > Access
 	ExpandThinking bool     `toml:"expand_thinking"`  // true = show reasoning text expanded by default; false = collapsed
 }
@@ -149,10 +148,12 @@ func normalizeThemeStyle(style string) string {
 
 func normalizeDesktopLayoutStyle(style string) string {
 	switch strings.ToLower(strings.TrimSpace(style)) {
+	case "classic":
+		return "classic"
 	case "workbench", "workspace":
 		return "workbench"
 	default:
-		return "classic"
+		return "workbench"
 	}
 }
 
@@ -200,9 +201,8 @@ func (c *Config) DesktopThemeStyle() string {
 	return normalizeThemeStyle(c.Desktop.ThemeStyle)
 }
 
-// DesktopLayoutStyle normalizes the desktop layout style. It falls back to the
-// classic layout, while accepting the short-lived desktop.theme_style=workbench
-// value as a compatibility migration hint.
+// DesktopLayoutStyle normalizes the desktop layout style. New installs default
+// to workbench; explicit classic remains respected.
 func (c *Config) DesktopLayoutStyle() string {
 	if strings.EqualFold(strings.TrimSpace(c.Desktop.ThemeStyle), "workbench") && strings.TrimSpace(c.Desktop.LayoutStyle) == "" {
 		return "workbench"
@@ -253,6 +253,8 @@ func (c *Config) DesktopStatusBarStyle() string {
 
 var defaultDesktopStatusBarItems = []string{
 	"model",
+	"workspace",
+	"git_branch",
 	"cache",
 	"cache_avg",
 	"session_tokens",
@@ -265,18 +267,14 @@ var defaultDesktopStatusBarItems = []string{
 	"balance",
 }
 
-var knownDesktopStatusBarItems = map[string]bool{
-	"model":          true,
-	"cache":          true,
-	"cache_avg":      true,
-	"session_tokens": true,
-	"turn_tokens":    true,
-	"turn_cost":      true,
-	"session_turns":  true,
-	"context":        true,
-	"compact":        true,
-	"cost":           true,
-	"balance":        true,
+var knownDesktopStatusBarItems = desktopStatusBarItemSet(defaultDesktopStatusBarItems)
+
+func desktopStatusBarItemSet(items []string) map[string]bool {
+	out := make(map[string]bool, len(items))
+	for _, item := range items {
+		out[item] = true
+	}
+	return out
 }
 
 // DefaultDesktopStatusBarItems returns the default ordered visible desktop
@@ -361,11 +359,11 @@ func (c *Config) DesktopTelemetry() bool {
 	return *c.Desktop.Telemetry
 }
 
-// DesktopMetrics reports whether the desktop sends opt-in aggregate agent
-// metrics — anonymous (signal, bucket) counters, never content. Default off.
+// DesktopMetrics reports whether the desktop sends aggregate desktop metrics —
+// anonymous (signal, bucket) counters, never content. Default on.
 func (c *Config) DesktopMetrics() bool {
 	if c == nil || c.Desktop.Metrics == nil {
-		return false
+		return true
 	}
 	return *c.Desktop.Metrics
 }
@@ -399,121 +397,6 @@ type LSPServer struct {
 // status data row. A JSON payload (model, context tokens, cwd) is fed on stdin.
 type StatuslineConfig struct {
 	Command string `toml:"command"`
-}
-
-// CodegraphConfig governs the built-in CodeGraph MCP server — symbol/call-graph
-// code intelligence (tree-sitter + SQLite) that gives the agent codegraph_*
-// search / context / explore / trace / node tools. Enabled defaults to true so
-// upgrades keep it for existing configs; first-run scaffolds write enabled =
-// false so only brand-new users start without it. AutoInstall (default true)
-// lets reasonix fetch the CodeGraph runtime into its cache when CodeGraph is
-// enabled but missing; set false to require an explicit `reasonix codegraph
-// install` (e.g. for air-gapped or headless runs). Path overrides binary
-// resolution; empty resolves the cache, then a `codegraph` on PATH, then a
-// bundle beside the executable. CodeGraph always starts in the background when
-// enabled; legacy tier values are ignored and removed during config load.
-type CodegraphConfig struct {
-	Enabled     bool   `toml:"enabled"`
-	AutoInstall bool   `toml:"auto_install"`
-	Path        string `toml:"path"`
-	Tier        string `toml:"tier"`
-}
-
-func (c CodegraphConfig) ShouldAutoStart() bool {
-	return c.Enabled
-}
-
-func (c CodegraphConfig) ResolvedTier() string {
-	return "background"
-}
-
-// BuiltInMCPConfig controls Reasonix-shipped MCP servers that require no user
-// server definition. They are off by default and become provider-visible only
-// after the user enables them.
-type BuiltInMCPConfig struct {
-	TimeEnabled     bool `toml:"time_enabled"`
-	Context7Enabled bool `toml:"context7_enabled"`
-}
-
-func (c BuiltInMCPConfig) Enabled(name string) bool {
-	switch name {
-	case "time":
-		return c.TimeEnabled
-	case "context7":
-		return c.Context7Enabled
-	default:
-		return false
-	}
-}
-
-func (c *BuiltInMCPConfig) SetEnabled(name string, enabled bool) bool {
-	switch name {
-	case "time":
-		c.TimeEnabled = enabled
-		return true
-	case "context7":
-		c.Context7Enabled = enabled
-		return true
-	default:
-		return false
-	}
-}
-
-func (c BuiltInMCPConfig) EnabledNames() []string {
-	var out []string
-	if c.TimeEnabled {
-		out = append(out, "time")
-	}
-	if c.Context7Enabled {
-		out = append(out, "context7")
-	}
-	return out
-}
-
-const (
-	BuiltInMCPUpdateModeOff             = "off"
-	BuiltInMCPUpdateModeNotify          = "notify"
-	BuiltInMCPUpdateModeDownload        = "download"
-	BuiltInMCPUpdateModeAutoNextSession = "auto_next_session"
-
-	defaultBuiltInMCPUpdateInterval = 24 * time.Hour
-)
-
-// BuiltInMCPUpdatesConfig controls background update checks for Reasonix-owned
-// built-in MCP runtimes. The default is notify-only so startup never silently
-// changes provider-visible MCP tool schemas.
-type BuiltInMCPUpdatesConfig struct {
-	Mode          string `toml:"mode"`
-	CheckInterval string `toml:"check_interval"`
-}
-
-func (c BuiltInMCPUpdatesConfig) ResolvedMode() string {
-	switch strings.ToLower(strings.TrimSpace(c.Mode)) {
-	case BuiltInMCPUpdateModeOff:
-		return BuiltInMCPUpdateModeOff
-	case BuiltInMCPUpdateModeDownload:
-		return BuiltInMCPUpdateModeDownload
-	case BuiltInMCPUpdateModeAutoNextSession:
-		return BuiltInMCPUpdateModeAutoNextSession
-	default:
-		return BuiltInMCPUpdateModeNotify
-	}
-}
-
-func (c BuiltInMCPUpdatesConfig) CheckIntervalDuration() time.Duration {
-	raw := strings.TrimSpace(c.CheckInterval)
-	if raw == "" {
-		return defaultBuiltInMCPUpdateInterval
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		return defaultBuiltInMCPUpdateInterval
-	}
-	return d
-}
-
-func (c BuiltInMCPUpdatesConfig) ResolvedCheckInterval() string {
-	return c.CheckIntervalDuration().String()
 }
 
 // BotConfig 控制多渠道 IM bot 消息网关。
@@ -782,11 +665,11 @@ func (c *Config) IsSkillDisabled(name string) bool {
 
 // SandboxConfig bounds the blast radius of tool calls (Phase 0: file-writer
 // confinement). WorkspaceRoot is the directory the built-in file writers
-// (write_file / edit_file / multi_edit / move_file) may modify; empty means the current
-// working directory, so writes stay inside the project by default. AllowWrite
-// lists extra directories writers may also touch (e.g. a sibling repo or a temp
-// dir). Both support ${VAR} / ${VAR:-default} expansion. Reads are unrestricted;
-// confining `bash` is Phase 1 (OS-level sandbox).
+// (write_file / edit_file / multi_edit / move_file) may modify; empty means the
+// current working directory, so writes stay inside the project by default.
+// AllowWrite lists extra directories writers may also touch (e.g. a sibling repo
+// or a temp dir). Both support ${VAR} / ${VAR:-default} expansion. Reads are
+// unrestricted; confining `bash` is Phase 1 (OS-level sandbox).
 type SandboxConfig struct {
 	WorkspaceRoot string   `toml:"workspace_root"`
 	AllowWrite    []string `toml:"allow_write"`
@@ -800,7 +683,7 @@ type SandboxConfig struct {
 }
 
 // WriteRoots returns the directories file-writer tools may modify: the
-// workspace root (defaulting to the current working directory when unset) plus
+// workspace root (defaulting to the current working directory when unset), plus
 // any AllowWrite extras, with ${VAR} expanded. The roots are returned as given
 // (relative or absolute); the confiner resolves them to absolute, symlink-free
 // paths. The result is always non-empty, so confinement is on by default.
@@ -885,6 +768,11 @@ type AgentConfig struct {
 	// ColdResumePrune elides stale tool results when a session reopens past the
 	// provider cache window. nil = default enabled.
 	ColdResumePrune *bool `toml:"cold_resume_prune"`
+	// PlanModeAllowedTools names tools that are exempt from the plan-mode read-only
+	// gate. When a tool named here is called while in plan mode, it executes without
+	// the "plan mode is read-only" block. Use sparingly — prefer the built-in safe
+	// bash commands for read-only exploration.
+	PlanModeAllowedTools []string `toml:"plan_mode_allowed_tools"`
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's
@@ -1244,9 +1132,10 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration (DeepSeek + MiMo presets).
 func Default() *Config {
 	return &Config{
-		ConfigVersion: 3,
-		DefaultModel:  "deepseek-flash",
-		UI:            UIConfig{Theme: "auto"},
+		ConfigVersion:    3,
+		DefaultModel:     "deepseek-flash",
+		CredentialsStore: CredentialsStoreAuto,
+		UI:               UIConfig{Theme: "auto"},
 		Notifications: NotificationsConfig{
 			Enabled:         false,
 			TurnDone:        true,
@@ -1267,7 +1156,7 @@ func Default() *Config {
 			CompactForceRatio: 0.9,
 		},
 		// Mode "ask" with no rules keeps `reasonix run` autonomous (no TTY → ask
-		// resolves to allow) while `reasonix chat` prompts before writers. Users add
+		// resolves to allow) while `reasonix` prompts before writers. Users add
 		// deny/allow rules to harden or quiet specific tools.
 		Permissions: PermissionsConfig{Mode: "ask"},
 		// Sandbox on by default: bash is jailed (macOS), network allowed so
@@ -1275,18 +1164,6 @@ func Default() *Config {
 		// so an absent [sandbox] in a user's file keeps egress (zero value would
 		// wrongly deny it).
 		Sandbox: SandboxConfig{Bash: "enforce", Network: true},
-		// CodeGraph code-intelligence defaults on so existing configs (which never
-		// wrote a [codegraph] section) keep it after an upgrade. First-run scaffolds
-		// write enabled = false instead, so only brand-new users start without it.
-		// AutoInstall fetches the runtime into the cache when enabled and missing.
-		Codegraph: CodegraphConfig{Enabled: true, AutoInstall: true},
-		// Time is dependency-free and bundled, so expose it by default. Context7
-		// can invoke a package runner and remains opt-in.
-		BuiltInMCP: BuiltInMCPConfig{TimeEnabled: true},
-		BuiltInMCPUpdates: BuiltInMCPUpdatesConfig{
-			Mode:          BuiltInMCPUpdateModeNotify,
-			CheckInterval: defaultBuiltInMCPUpdateInterval.String(),
-		},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.
 		LSP:     LSPConfig{Enabled: true},
@@ -1566,6 +1443,7 @@ func LoadForRoot(root string) (*Config, error) {
 	root = resolveRoot(root)
 	loadDotEnvForRoot(root)
 	cfg := Default()
+	cfg.CredentialsStore = credentialsStoreMode()
 
 	projectTOML := "reasonix.toml"
 	if root != "." {
@@ -1573,14 +1451,12 @@ func LoadForRoot(root string) (*Config, error) {
 	}
 
 	var tomlSources []string
-	if uc := userConfigPath(); uc != "" {
+	if uc := userConfigLoadPath(); uc != "" {
 		tomlSources = append(tomlSources, uc)
 	}
 	tomlSources = append(tomlSources, projectTOML)
-	sawConfigFile := false
 	for _, path := range tomlSources {
 		if _, err := os.Stat(path); err == nil {
-			sawConfigFile = true
 			if err := migrateLegacyMCPTiersFile(path); err != nil {
 				slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
 			}
@@ -1597,11 +1473,12 @@ func LoadForRoot(root string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Plugins = plugins
-	if providers, providerSources, ok, err := mergeTOMLProviders(tomlSources); err != nil {
+	if providers, providerSources, shadowedProjectProviders, ok, err := mergeTOMLProviders(tomlSources); err != nil {
 		return nil, err
 	} else if ok {
 		cfg.Providers = providers
 		cfg.providerSources = providerSources
+		cfg.shadowedProjectProviders = shadowedProjectProviders
 	}
 	if access, ok, err := mergeTOMLProviderAccess(tomlSources); err != nil {
 		return nil, err
@@ -1636,12 +1513,7 @@ func LoadForRoot(root string) (*Config, error) {
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 	backfillDeepSeekPro(cfg)
-	// First run (no config file anywhere): keep CodeGraph off until the user opts
-	// in. An existing config — even one without a [codegraph] section — keeps the
-	// built-in default (on), so an upgrade never silently drops code intelligence.
-	if !sawConfigFile {
-		cfg.Codegraph.Enabled = false
-	}
+	cfg.CredentialsStore = credentialsStoreMode()
 	return cfg, nil
 }
 
@@ -1769,12 +1641,14 @@ func mergeTOMLPlugins(paths []string) ([]PluginEntry, error) {
 	return merged, nil
 }
 
-// mergeTOMLProviders merges [[providers]] across TOML sources by provider name
-// (later source wins). Keep official legacy aliases distinct here: they can carry
-// different default models and effort capabilities, and the later desktop
-// normalization layer handles canonical Settings access.
-func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSourceScope, bool, error) {
+// mergeTOMLProviders merges [[providers]] across TOML sources by provider name.
+// User-global providers win over same-named project providers; project providers
+// only fill names the global config does not define. Keep official legacy aliases
+// distinct here: they can carry different default models and effort capabilities,
+// and the later desktop normalization layer handles canonical Settings access.
+func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSourceScope, []ProviderEntry, bool, error) {
 	var merged []ProviderEntry
+	var shadowedProject []ProviderEntry
 	index := map[string]int{}
 	sources := map[string]providerSourceScope{}
 	saw := false
@@ -1784,7 +1658,7 @@ func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSou
 		}
 		var f Config
 		if _, err := toml.DecodeFile(path, &f); err != nil {
-			return nil, nil, false, fmt.Errorf("config %s: %w", path, err)
+			return nil, nil, nil, false, fmt.Errorf("config %s: %w", path, err)
 		}
 		if len(f.Providers) == 0 {
 			continue
@@ -1795,15 +1669,22 @@ func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSou
 			normalizeProviderEffortFields(&p)
 			key := providerMergeKey(p)
 			if i, ok := index[key]; ok {
-				merged[i] = p
+				if sources[key] == providerSourceProject && source == providerSourceUser {
+					shadowedProject = append(shadowedProject, merged[i])
+					merged[i] = p
+					sources[key] = source
+				} else if sources[key] == providerSourceUser && source == providerSourceProject {
+					shadowedProject = append(shadowedProject, p)
+				}
+				continue
 			} else {
 				index[key] = len(merged)
 				merged = append(merged, p)
+				sources[key] = source
 			}
-			sources[key] = source
 		}
 	}
-	return merged, sources, saw, nil
+	return merged, sources, shadowedProject, saw, nil
 }
 
 func providerSourceForPath(path string) providerSourceScope {
@@ -1855,16 +1736,46 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 // of resetting to defaults. .env is loaded so api_key_env resolution works while
 // the wizard decides which keys are still missing.
 func LoadForEdit(path string) *Config {
-	loadDotEnv()
+	cfg, err := loadForEditStrict(path, true)
+	if err == nil {
+		return cfg
+	}
+	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
+	loadDotEnvForEditPath(path)
+	cfg = Default()
+	normalizeConfigForEdit(cfg)
+	return cfg
+}
+
+func LoadForEditWithoutCredentials(path string) *Config {
+	cfg, err := loadForEditStrict(path, false)
+	if err == nil {
+		return cfg
+	}
+	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
+	cfg = Default()
+	normalizeConfigForEdit(cfg)
+	return cfg
+}
+
+func loadForEditStrict(path string, loadCredentials bool) (*Config, error) {
+	if loadCredentials {
+		loadDotEnvForEditPath(path)
+	}
 	cfg := Default()
 	if _, err := os.Stat(path); err == nil {
 		if err := migrateLegacyMCPTiersFile(path); err != nil {
-			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
+			return nil, fmt.Errorf("config %s: %w", path, err)
 		}
 	}
 	if err := mergeFile(cfg, path); err != nil {
-		slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
+		return nil, err
 	}
+	normalizeConfigForEdit(cfg)
+	return cfg, nil
+}
+
+func normalizeConfigForEdit(cfg *Config) {
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
 	normalizeLegacyMCPTiers(cfg)
@@ -1873,7 +1784,15 @@ func LoadForEdit(path string) *Config {
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
-	return cfg
+}
+
+func loadDotEnvForEditPath(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" || isUserConfigPath(path) {
+		loadDotEnv()
+		return
+	}
+	loadDotEnvForRoot(filepath.Dir(path))
 }
 
 // mergeFile decodes a TOML file onto cfg if it exists. An absent file is not an error.
@@ -1894,7 +1813,6 @@ func normalizeLegacyMCPTiers(c *Config) {
 	if c == nil {
 		return
 	}
-	c.Codegraph.Tier = ""
 	for i := range c.Plugins {
 		c.Plugins[i].Tier = ""
 	}
@@ -1925,7 +1843,7 @@ func stripLegacyMCPTierLines(raw string) (string, bool) {
 		if header := tomlSectionHeader(line); header != "" {
 			section = header
 		}
-		if (section == "codegraph" || section == "plugins") && isTOMLKeyAssignment(line, "tier") {
+		if section == "plugins" && isTOMLKeyAssignment(line, "tier") {
 			changed = true
 			continue
 		}
@@ -1943,8 +1861,6 @@ func tomlSectionHeader(line string) string {
 		trimmed = strings.TrimSpace(trimmed[:i])
 	}
 	switch trimmed {
-	case "[codegraph]":
-		return "codegraph"
 	case "[[plugins]]":
 		return "plugins"
 	default:
@@ -2058,7 +1974,7 @@ func normalizeDesktopOfficialProviderAccess(c *Config) {
 		if strings.TrimSpace(name) == "mimo-flash" {
 			includeMimoFlash = true
 		}
-		name = canonicalDesktopOfficialProviderName(name)
+		name = desktopProviderAccessNameForConfig(c, name)
 		if name == "" || seen[name] {
 			continue
 		}
@@ -2089,7 +2005,7 @@ func NormalizeLegacyDesktopProviderAccess(c *Config) {
 	seen := desktopProviderAccessMap(nil)
 	var access []string
 	add := func(name string) {
-		name = canonicalDesktopOfficialProviderName(name)
+		name = desktopProviderAccessNameForConfig(c, name)
 		if name == "" || seen[name] {
 			return
 		}
@@ -2113,7 +2029,7 @@ func NormalizeLegacyDesktopProviderAccess(c *Config) {
 	}
 	for i := range c.Providers {
 		p := &c.Providers[i]
-		if p.Configured() {
+		if p.Configured() && len(p.ModelList()) > 0 {
 			add(p.Name)
 		}
 	}
@@ -2137,6 +2053,40 @@ func canonicalDesktopOfficialProviderName(name string) string {
 	}
 }
 
+func desktopProviderAccessNameForConfig(c *Config, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	canonical := canonicalDesktopOfficialProviderName(name)
+	if canonical == name {
+		return name
+	}
+	if c == nil {
+		return canonical
+	}
+	if p, ok := c.Provider(name); ok && !providerEntryMatchesCanonicalOfficialAccess(p, canonical) {
+		return name
+	}
+	return canonical
+}
+
+func providerEntryMatchesCanonicalOfficialAccess(p *ProviderEntry, canonical string) bool {
+	if p == nil {
+		return false
+	}
+	switch canonical {
+	case "deepseek":
+		return officialProviderKind(p) == "deepseek"
+	case "mimo-api":
+		return isOfficialMimoAPIProvider(p)
+	case "mimo-token-plan":
+		return isOfficialMimoTokenPlanProvider(p)
+	default:
+		return false
+	}
+}
+
 // CanonicalDesktopOfficialProviderName returns the Settings Center provider ID
 // for built-in official provider aliases.
 func CanonicalDesktopOfficialProviderName(name string) string {
@@ -2146,7 +2096,7 @@ func CanonicalDesktopOfficialProviderName(name string) string {
 func desktopProviderAccessMap(names []string) map[string]bool {
 	out := map[string]bool{}
 	for _, name := range names {
-		name = canonicalDesktopOfficialProviderName(name)
+		name = strings.TrimSpace(name)
 		if name != "" {
 			out[name] = true
 		}
@@ -2417,16 +2367,191 @@ func retargetDesktopOfficialRef(ref string, access map[string]bool) string {
 const AppDir = "rs-reasonix"
 
 func userConfigPath() string {
+	dir := userConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.toml")
+}
+
+func userConfigDir() string {
+	return reasonixHomeDir()
+}
+
+func reasonixHomeDir() string {
+	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+		return dir
+	}
+	if runtime.GOOS != "windows" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, ".reasonix")
+		}
+		return ""
+	}
+	dir := osUserConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "reasonix")
+}
+
+func userConfigLoadPath() string {
+	primary := userConfigPath()
+	if primary == "" {
+		return legacyUserConfigPath()
+	}
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	if legacy := legacyUserConfigPath(); legacy != "" {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	for _, legacy := range legacyXDGConfigPaths() {
+		if legacy == "" || samePath(legacy, primary) {
+			continue
+		}
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return primary
+}
+
+func legacyUserConfigPath() string {
+	dir := legacyOSSupportDir()
+	if dir == "" {
+		return ""
+	}
+	path := filepath.Join(dir, "config.toml")
+	if primary := userConfigPath(); primary != "" && samePath(path, primary) {
+		return ""
+	}
+	return path
+}
+
+func userConfigCandidatePaths() []string {
+	var paths []string
+	if p := userConfigPath(); p != "" {
+		paths = append(paths, p)
+	}
+	if p := legacyUserConfigPath(); p != "" {
+		paths = append(paths, p)
+	}
+	paths = append(paths, legacyXDGConfigPaths()...)
+	return paths
+}
+
+func legacyXDGConfigPaths() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var paths []string
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	if dir := cleanEnvDir("XDG_CONFIG_HOME"); dir != "" {
+		add(filepath.Join(dir, "reasonix", "config.toml"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add(filepath.Join(home, ".config", "reasonix", "config.toml"))
+	}
+	return paths
+}
+
+func userSupportDir() string {
+	if dir := cleanEnvDir("REASONIX_STATE_HOME"); dir != "" {
+		return dir
+	}
+	return reasonixHomeDir()
+}
+
+func legacyOSSupportDir() string {
+	dir := osUserConfigDir()
+	if dir == "" {
+		return ""
+	}
+	path := filepath.Join(dir, "reasonix")
+	if current := reasonixHomeDir(); current != "" && samePath(path, current) {
+		return ""
+	}
+	return path
+}
+
+func userCacheDir() string {
+	if dir := cleanEnvDir("REASONIX_CACHE_HOME"); dir != "" {
+		return dir
+	}
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "reasonix")
+}
+
+func osUserConfigDir() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
+<<<<<<< HEAD
 	return filepath.Join(dir, AppDir, "config.toml")
+=======
+	return dir
+}
+
+func cleanEnvDir(name string) string {
+	dir := strings.TrimSpace(os.Getenv(name))
+	if dir == "" {
+		return ""
+	}
+	dir = ExpandVars(dir)
+	if dir == "~" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			dir = home
+		}
+	} else if strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			dir = filepath.Join(home, dir[2:])
+		}
+	}
+	if !filepath.IsAbs(dir) {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+	}
+	return filepath.Clean(dir)
+}
+
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	aa, aerr := filepath.Abs(a)
+	bb, berr := filepath.Abs(b)
+	if aerr == nil {
+		a = aa
+	}
+	if berr == nil {
+		b = bb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+>>>>>>> upstream/main-v2
 }
 
 // userConfigDisplayPath is userConfigPath collapsed to a ~-relative form for
-// comments rendered into the user's own config.toml, so macOS/Windows users see
-// the real location instead of a hardcoded ~/.config path.
+// comments rendered into the user's own config.toml, so Windows users see the
+// real location instead of a hardcoded ~/.reasonix path.
 func userConfigDisplayPath() string {
 	p := userConfigPath()
 	if p == "" {
@@ -2440,51 +2565,96 @@ func userConfigDisplayPath() string {
 	return p
 }
 
-// UserConfigPath is the user-global config.toml under os.UserConfigDir(): ~/.config
-// on Linux, ~/Library/Application Support on macOS, %AppData% on Windows. "" when
-// the user config dir can't be resolved.
+// UserConfigPath is the user-global config.toml. It lives under Reasonix home:
+// REASONIX_HOME/config.toml, then ~/.reasonix/config.toml on Unix-like systems,
+// or %AppData%/reasonix/config.toml on Windows. "" when the user config dir
+// can't be resolved.
 func UserConfigPath() string { return userConfigPath() }
 
-// UserCredentialsPath is the reasonix-owned global secrets file, beside
-// config.toml in the user config dir (os.UserConfigDir()/reasonix/credentials). It
-// holds KEY=value lines loaded into the environment by loadDotEnv. The setup
-// wizard writes API keys here, deliberately NOT named .env: keys never land in a
-// project's own .env (which can't be selectively gitignored), never get
-// committed, and resolve from any working directory. "" when the user config dir
+// LegacyUserConfigPath is the old OS app-support config.toml path when it
+// differs from UserConfigPath. It is read as a compatibility fallback when the
+// primary user config does not exist.
+func LegacyUserConfigPath() string { return legacyUserConfigPath() }
+
+// LegacyUserConfigPaths returns every known legacy user config path that differs
+// from the current v1.8.1 Reasonix-home config path.
+func LegacyUserConfigPaths() []string {
+	primary := userConfigPath()
+	var out []string
+	add := func(path string) {
+		if path == "" || samePath(path, primary) {
+			return
+		}
+		for _, existing := range out {
+			if samePath(existing, path) {
+				return
+			}
+		}
+		out = append(out, path)
+	}
+	add(legacyUserConfigPath())
+	for _, path := range legacyXDGConfigPaths() {
+		add(path)
+	}
+	return out
+}
+
+// ReasonixHomeDir is the current Reasonix home directory. It honors
+// REASONIX_HOME, then uses ~/.reasonix on macOS/Linux or %APPDATA%/reasonix on
+// Windows.
+func ReasonixHomeDir() string { return reasonixHomeDir() }
+
+// UserCredentialsPath is the reasonix-owned global secrets file under Reasonix
+// home. It holds KEY=value lines loaded into the environment by loadDotEnv. The
+// setup wizard writes API keys here, deliberately NOT named .env: keys never
+// land in a project's own .env (which can't be selectively gitignored), never
+// get committed, and resolve from any working directory. "" when Reasonix home
 // can't be resolved.
 func UserCredentialsPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	dir := userSupportDir()
+	if dir == "" {
 		return ""
 	}
+<<<<<<< HEAD
 	return filepath.Join(dir, AppDir, "credentials")
+=======
+	return filepath.Join(dir, "credentials")
+>>>>>>> upstream/main-v2
 }
 
 // ArchiveDir is where compacted conversation history is archived for
-// traceability (one timestamped .jsonl per compaction). Empty if the user config
+// traceability (one timestamped .jsonl per compaction). Empty if the user state
 // directory cannot be resolved, in which case archiving is skipped.
 func ArchiveDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	dir := userSupportDir()
+	if dir == "" {
 		return ""
 	}
+<<<<<<< HEAD
 	return filepath.Join(dir, AppDir, "archive")
+=======
+	return filepath.Join(dir, "archive")
+>>>>>>> upstream/main-v2
 }
 
 // SessionDir is where chat sessions are persisted (one .jsonl per session).
-// Used by `reasonix chat --continue` / `--resume` to find the recent ones. Empty
-// if the user config dir can't be resolved — sessions then aren't saved.
+// Used by `reasonix --continue` / `--resume` to find the recent ones. Empty
+// if the user state dir can't be resolved — sessions then aren't saved.
 func SessionDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	dir := userSupportDir()
+	if dir == "" {
 		return ""
 	}
+<<<<<<< HEAD
 	return filepath.Join(dir, AppDir, "sessions")
+=======
+	return filepath.Join(dir, "sessions")
+>>>>>>> upstream/main-v2
 }
 
 // ProjectSessionDir is the per-workspace session directory the desktop sidebar
-// lists: <config root>/projects/<slug>/sessions. Empty when either the config
-// root or workspaceRoot doesn't resolve.
+// lists: <state root>/projects/<slug>/sessions. Empty when either the state root
+// or workspaceRoot doesn't resolve.
 func ProjectSessionDir(workspaceRoot string) string {
 	base := MemoryUserDir()
 	root := strings.TrimSpace(workspaceRoot)
@@ -2504,27 +2674,33 @@ func WorkspaceSlug(absPath string) string {
 }
 
 // CacheDir is the per-user cache root for derived/regenerable artefacts: MCP
-// handshake snapshots, plugin startup-latency telemetry. Lives beside the
-// existing dirs (UserConfigDir/reasonix/...) so the whole reasonix state tree
-// shares one root the user can wipe in a single rm. Empty when the OS dir is
+// handshake snapshots, plugin startup-latency telemetry. Empty when the OS dir is
 // unavailable — callers must tolerate that (caching is best-effort).
 func CacheDir() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
+	dir := userCacheDir()
+	if dir == "" {
 		return ""
 	}
+<<<<<<< HEAD
 	return filepath.Join(dir, AppDir, "cache")
+=======
+	return dir
+>>>>>>> upstream/main-v2
 }
 
-// MemoryUserDir returns the reasonix user config root (…/reasonix), under which
+// MemoryUserDir returns the reasonix user state root (…/reasonix), under which
 // the user-global REASONIX.md and the per-project auto-memory store live. Empty
-// when the user config dir can't be resolved, which disables user-scoped memory.
+// when the user state dir can't be resolved, which disables user-scoped memory.
 func MemoryUserDir() string {
+<<<<<<< HEAD
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(dir, AppDir)
+=======
+	return userSupportDir()
+>>>>>>> upstream/main-v2
 }
 
 // ConventionDirs are the parent directories scanned for agent assets (skills,
@@ -2549,8 +2725,9 @@ func conventionSubdirsAsc(base, sub string) []string {
 
 // CommandDirs returns the directories scanned for custom slash commands, lowest
 // priority first, so a later (more specific) directory overrides an earlier one
-// on a name clash. Order: home-dir convention dirs (~/.claude/commands … ~/.reasonix/commands),
-// the legacy XDG user dir (~/.config/reasonix/commands), then the project's
+// on a name clash. Order: home-dir convention dirs (~/.claude/commands …
+// ~/.reasonix/commands), the Reasonix home commands dir, the legacy OS
+// app-support dir if different, then the project's
 // convention dirs (.claude/commands … .reasonix/commands). Scanning the .claude /
 // .agents / .agent dirs lets commands authored for other agent tools (same .md +
 // frontmatter format) work here unchanged.
@@ -2559,18 +2736,47 @@ func CommandDirs() []string {
 }
 
 // CommandDirsForRoot is like CommandDirs but resolves the project convention
-// dirs under root instead of the current working directory. Global (home/XDG)
-// dirs are unchanged — they are always user-scoped.
+// dirs under root instead of the current working directory. Global dirs are
+// unchanged — they are always user-scoped.
 func CommandDirsForRoot(root string) []string {
 	root = resolveRoot(root)
 	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, conventionSubdirsAsc(home, "commands")...)
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		for _, existing := range dirs {
+			if samePath(existing, dir) {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
 	}
+	if dir := legacyOSSupportDir(); dir != "" {
+		add(filepath.Join(dir, "commands"))
+	}
+	for _, legacy := range legacyXDGConfigPaths() {
+		add(filepath.Join(filepath.Dir(legacy), "commands"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, dir := range conventionSubdirsAsc(home, "commands") {
+			add(dir)
+		}
+	}
+<<<<<<< HEAD
 	if dir, err := os.UserConfigDir(); err == nil {
 		dirs = append(dirs, filepath.Join(dir, AppDir, "commands")) // legacy XDG user dir
+=======
+	if dir := userConfigDir(); dir != "" {
+		add(filepath.Join(dir, "commands"))
 	}
-	dirs = append(dirs, conventionSubdirsAsc(root, "commands")...)
+	if dir := userSupportDir(); dir != "" && !samePath(dir, userConfigDir()) {
+		add(filepath.Join(dir, "commands"))
+	}
+	for _, dir := range conventionSubdirsAsc(root, "commands") {
+		add(dir)
+>>>>>>> upstream/main-v2
+	}
 	return dirs
 }
 
@@ -2590,7 +2796,7 @@ func SourcePathForRoot(root string) string {
 	if _, err := os.Stat(projectTOML); err == nil {
 		return projectTOML
 	}
-	if uc := userConfigPath(); uc != "" {
+	if uc := userConfigLoadPath(); uc != "" {
 		if _, err := os.Stat(uc); err == nil {
 			return uc
 		}
@@ -2699,10 +2905,51 @@ func (e *ProviderEntry) APIKey() string {
 	return os.Getenv(e.APIKeyEnv)
 }
 
-// Configured reports whether the provider's api_key_env is set — the same check
-// Validate enforces, so pickers can filter on it.
+// RequiresAPIKey reports whether this provider should be hidden/validated when
+// its configured api_key_env is empty. A blank api_key_env means the provider is
+// intentionally no-auth. Local OpenAI-compatible gateways often keep a legacy
+// api_key_env in config even though they accept unauthenticated requests, so
+// loopback/private endpoints are also allowed to run without a resolved key.
+func (e *ProviderEntry) RequiresAPIKey() bool {
+	if e == nil {
+		return false
+	}
+	if strings.TrimSpace(e.APIKeyEnv) == "" {
+		return providerBaseURLRequiresAPIKey(e.BaseURL)
+	}
+	return !providerBaseURLAllowsMissingAPIKey(e.BaseURL)
+}
+
+func providerBaseURLRequiresAPIKey(raw string) bool {
+	switch officialProviderHost(raw) {
+	case "api.deepseek.com", "api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com", "api.minimaxi.com", "api.openai.com":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerBaseURLAllowsMissingAPIKey(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.Trim(strings.ToLower(u.Hostname()), "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
+}
+
+// Configured reports whether the provider is selectable. Providers that do not
+// require an API key are configured by definition; providers that name an env var
+// require that variable to resolve unless their endpoint is local/private.
 func (e *ProviderEntry) Configured() bool {
-	return e.APIKey() != ""
+	return e != nil && (!e.RequiresAPIKey() || e.APIKey() != "")
 }
 
 // ResolveSystemPrompt returns the system prompt, reading system_prompt_file if set.
@@ -2743,7 +2990,7 @@ func (c *Config) Validate(model string) error {
 	if e.BaseURL == "" {
 		return fmt.Errorf("provider %q: base_url is required", model)
 	}
-	if e.APIKey() == "" {
+	if e.RequiresAPIKey() && e.APIKey() == "" {
 		return fmt.Errorf("provider %q: missing env %s", model, e.APIKeyEnv)
 	}
 	return nil

@@ -20,7 +20,7 @@ import (
 // resolved config and applies edits through internal/config/edit.go (the
 // purpose-built mutation API), then rebuilds the controller so the change takes
 // effect live — the same snapshot→reload→resume pattern as SetModel. Secrets are
-// the exception: they go to the global credentials file (upsertDotEnv), since
+// the exception: they go to the global credential store (upsertDotEnv), since
 // config stores only the env-var name, not the key.
 
 // --- read ---
@@ -38,6 +38,10 @@ type ProviderView struct {
 	Default           string   `json:"default"`
 	APIKeyEnv         string   `json:"apiKeyEnv"`
 	KeySet            bool     `json:"keySet"` // the env var currently resolves to a non-empty value
+	RequiresKey       bool     `json:"requiresKey"`
+	Configured        bool     `json:"configured"` // selectable: either key is present or no key is required
+	KeySource         string   `json:"keySource,omitempty"`
+	KeySourcePath     string   `json:"keySourcePath,omitempty"`
 	BalanceURL        string   `json:"balanceUrl"`
 	ContextWindow     int      `json:"contextWindow"`
 	ReasoningProtocol string   `json:"reasoningProtocol"`
@@ -272,17 +276,27 @@ func removeProviderAccess(c *config.Config, names ...string) {
 }
 
 func providerViewFromEntry(p config.ProviderEntry, builtIn, added bool) ProviderView {
+	return providerViewFromEntryForRoot(p, builtIn, added, ".")
+}
+
+func providerViewFromEntryForRoot(p config.ProviderEntry, builtIn, added bool, root string) ProviderView {
 	models := p.ChatModelList()
 	visionModels := p.VisionModels
 	visionModelsSet := p.Vision || p.VisionModels != nil
 	if p.Vision {
 		visionModels = models
 	}
+	key := config.ResolveCredentialForRootGlobalFirst(root, p.APIKeyEnv)
+	requiresKey := p.RequiresAPIKey()
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL,
 		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
-		KeySet:            p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) != "",
+		KeySet:            key.Set,
+		RequiresKey:       requiresKey,
+		Configured:        !requiresKey || key.Set,
+		KeySource:         key.Source.Label,
+		KeySourcePath:     key.Source.Path,
 		BalanceURL:        p.BalanceURL,
 		ContextWindow:     p.ContextWindow,
 		ReasoningProtocol: p.ReasoningProtocol,
@@ -292,6 +306,10 @@ func providerViewFromEntry(p config.ProviderEntry, builtIn, added bool) Provider
 }
 
 func officialProviderViews(added map[string]bool, pricingLanguage string) []ProviderView {
+	return officialProviderViewsForRoot(added, pricingLanguage, ".")
+}
+
+func officialProviderViewsForRoot(added map[string]bool, pricingLanguage, root string) []ProviderView {
 	var out []ProviderView
 	for _, kind := range []string{"deepseek", "mimo-api", "mimo-token-plan"} {
 		entries, _, err := officialProviderTemplate(kind, pricingLanguage)
@@ -299,7 +317,7 @@ func officialProviderViews(added map[string]bool, pricingLanguage string) []Prov
 			continue
 		}
 		for _, entry := range entries {
-			out = append(out, providerViewFromEntry(entry, true, added[entry.Name]))
+			out = append(out, providerViewFromEntryForRoot(entry, true, added[entry.Name], root))
 		}
 	}
 	return out
@@ -325,7 +343,7 @@ func officialProviderAddedSet(cfg *config.Config) map[string]bool {
 
 // Settings returns the current configuration for the Settings panel.
 func (a *App) Settings() SettingsView {
-	cfg, cfgPath, err := a.loadDesktopUserConfigForEdit()
+	cfg, cfgPath, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return SettingsView{
 			Providers:         []ProviderView{},
@@ -341,7 +359,7 @@ func (a *App) Settings() SettingsView {
 			Agent:              AgentView{PlannerMaxSteps: 12, ColdResumePrune: true, ReasoningLanguage: "auto"},
 			Bot:                botSettingsView(config.BotConfig{}),
 			AutoPlan:           "off",
-			DesktopLayoutStyle: "classic",
+			DesktopLayoutStyle: "workbench",
 			DesktopTheme:       "auto",
 			DesktopThemeStyle:  "graphite",
 			CloseBehavior:      "background",
@@ -350,7 +368,7 @@ func (a *App) Settings() SettingsView {
 			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
 			CheckUpdates:       true,
 			Telemetry:          true,
-			Metrics:            false,
+			Metrics:            true,
 			ExpandThinking:     false,
 		}
 	}
@@ -414,10 +432,11 @@ func (a *App) Settings() SettingsView {
 		Bypass:             ctrl != nil && ctrl.AutoApproveTools(),
 	}
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
-	v.OfficialProviders = officialProviderViews(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage())
+	root := a.activeWorkspaceRoot()
+	v.OfficialProviders = officialProviderViewsForRoot(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage(), root)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
-		v.Providers = append(v.Providers, providerViewFromEntry(*p, isOfficialBuiltInProvider(*p), added[p.Name]))
+		v.Providers = append(v.Providers, providerViewFromEntryForRoot(*p, isOfficialBuiltInProvider(*p), added[p.Name], root))
 	}
 	return v
 }
@@ -562,6 +581,38 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	return legacyCfg, userPath, nil
 }
 
+func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
+	userPath := config.UserConfigPath()
+	if userPath == "" {
+		return nil, "", fmt.Errorf("cannot resolve user config directory")
+	}
+	if _, err := os.Stat(userPath); err == nil {
+		cfg := config.LoadForEditWithoutCredentials(userPath)
+		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+		if legacyPath != "" && !sameConfigPath(legacyPath, userPath) {
+			legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
+			if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
+				return nil, "", err
+			}
+		}
+		return cfg, userPath, nil
+	}
+	cfg := config.LoadForEditWithoutCredentials(userPath)
+	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
+	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
+		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
+		return cfg, userPath, nil
+	}
+	legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
+	normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath)
+	legacyCfg.ConfigVersion = config.Default().ConfigVersion
+	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
+		return nil, "", err
+	}
+	return legacyCfg, userPath, nil
+}
+
 func (a *App) migrateLegacyBotConfigToUser(userCfg *config.Config, userPath string) error {
 	if userCfg == nil {
 		return nil
@@ -658,6 +709,34 @@ func (a *App) activeWorkspaceRoot() string {
 		return tab.WorkspaceRoot
 	}
 	return "."
+}
+
+func (a *App) saveProviderCredential(apiKeyEnv, value string) (string, error) {
+	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
+	value = strings.TrimSpace(value)
+	root := a.activeWorkspaceRoot()
+	before := config.ResolveCredentialForRoot(root, apiKeyEnv)
+	beforeEnvValue, beforeEnvSet := os.LookupEnv(apiKeyEnv)
+	if err := upsertDotEnv(apiKeyEnv, value); err != nil {
+		return "", err
+	}
+	return providerCredentialShadowWarning(apiKeyEnv, value, root, before, beforeEnvSet, beforeEnvValue), nil
+}
+
+func providerCredentialShadowWarning(apiKeyEnv, value, root string, before config.CredentialResolution, beforeEnvSet bool, beforeEnvValue string) string {
+	if beforeEnvSet && beforeEnvValue != value {
+		return fmt.Sprintf("saved %s to Reasonix credentials, but an existing environment variable with the same name can override it after restart; update or remove that environment variable", apiKeyEnv)
+	}
+	if before.Set && before.Source.Kind == config.CredentialSourceEnvironment && before.Value != value {
+		return fmt.Sprintf("saved %s to Reasonix credentials, but an existing environment variable with the same name can override it after restart; update or remove that environment variable", apiKeyEnv)
+	}
+	current := config.ResolveCredentialForRoot(root, apiKeyEnv)
+	for _, source := range current.Shadowed {
+		if source.Kind == config.CredentialSourceProjectEnv {
+			return fmt.Sprintf("saved %s to Reasonix credentials, but this workspace's project .env also defines %s and can override it after restart; update or remove that project .env entry", apiKeyEnv, apiKeyEnv)
+		}
+	}
+	return ""
 }
 
 func projectConfigPathForRoot(root string) string {
@@ -1035,21 +1114,24 @@ func (a *App) SaveProvider(p ProviderView) error {
 // AddOfficialProviderAccess adds one curated desktop provider template to the
 // Settings > Model > Access list. The runtime default providers still exist
 // independently; this only records the user's explicit access setup.
-func (a *App) AddOfficialProviderAccess(kind, key string) error {
+func (a *App) AddOfficialProviderAccess(kind, key string) (string, error) {
 	cfg, _, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
-		return err
+		return "", err
 	}
 	entries, keyEnv, err := officialProviderTemplate(kind, cfg.DeepSeekOfficialPricingLanguage())
 	if err != nil {
-		return err
+		return "", err
 	}
+	keyWarning := ""
 	if strings.TrimSpace(key) != "" && keyEnv != "" {
-		if err := upsertDotEnv(keyEnv, key); err != nil {
-			return err
+		var err error
+		keyWarning, err = a.saveProviderCredential(keyEnv, key)
+		if err != nil {
+			return "", err
 		}
 	}
-	return a.applyConfigChange(func(c *config.Config) error {
+	if err := a.applyConfigChange(func(c *config.Config) error {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			if err := c.UpsertProvider(e); err != nil {
@@ -1059,7 +1141,10 @@ func (a *App) AddOfficialProviderAccess(kind, key string) error {
 		}
 		addProviderAccess(c, names...)
 		return nil
-	})
+	}); err != nil {
+		return "", err
+	}
+	return keyWarning, nil
 }
 
 // FetchProviderModels probes the provider's OpenAI-compatible model-list
@@ -1302,23 +1387,81 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	return nil
 }
 
-// SetProviderKey writes a secret to the global credentials file under the given
+// SetProviderKey writes a secret to the global credential store under the given
 // env-var name (the one a provider's api_key_env points at) and rebuilds so it
 // resolves immediately.
-func (a *App) SetProviderKey(apiKeyEnv, value string) error {
+func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if strings.TrimSpace(apiKeyEnv) == "" {
-		return fmt.Errorf("this provider has no api_key_env set")
+		return "", fmt.Errorf("this provider has no api_key_env set")
 	}
 	if err := a.ensureActiveTabRebuildAllowed("provider key"); err != nil {
-		return err
+		return "", err
 	}
-	if err := upsertDotEnv(apiKeyEnv, value); err != nil {
-		return err
+	warning, err := a.saveProviderCredential(apiKeyEnv, value)
+	if err != nil {
+		return "", err
 	}
-	return a.rebuild()
+	if err := a.ensureProviderAccessForKey(apiKeyEnv); err != nil {
+		return "", err
+	}
+	if err := a.rebuild(); err != nil {
+		return "", err
+	}
+	return warning, nil
 }
 
-// ClearProviderKey removes a provider secret from the global credentials file
+func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
+	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
+	if apiKeyEnv == "" {
+		return nil
+	}
+	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	access := providerAccessSet(cfg.Desktop.ProviderAccess)
+	changed := false
+	addAccess := func(name string) {
+		if name == "" || access[name] {
+			return
+		}
+		addProviderAccess(cfg, name)
+		access[name] = true
+		changed = true
+	}
+	for i := range cfg.Providers {
+		p := cfg.Providers[i]
+		if strings.TrimSpace(p.APIKeyEnv) != apiKeyEnv {
+			continue
+		}
+		if len(p.ModelList()) == 0 {
+			continue
+		}
+		if isOfficialBuiltInProvider(p) {
+			addAccess(config.CanonicalDesktopOfficialProviderName(p.Name))
+		} else {
+			addAccess(strings.TrimSpace(p.Name))
+		}
+	}
+	if !changed && apiKeyEnv == "DEEPSEEK_API_KEY" {
+		entries, _, err := officialProviderTemplate("deepseek", cfg.DeepSeekOfficialPricingLanguage())
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := cfg.UpsertProvider(e); err != nil {
+				return err
+			}
+			addAccess(e.Name)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return cfg.SaveTo(path)
+}
+
+// ClearProviderKey removes a provider secret from the global credential store
 // and rebuilds so the provider immediately becomes unauthenticated.
 func (a *App) ClearProviderKey(apiKeyEnv string) error {
 	if strings.TrimSpace(apiKeyEnv) == "" {
@@ -1519,7 +1662,7 @@ func (a *App) SetDesktopTelemetry(enabled bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopTelemetry(enabled) })
 }
 
-// SetDesktopMetrics sets whether the desktop sends opt-in aggregate agent metrics,
+// SetDesktopMetrics sets whether the desktop sends aggregate desktop metrics,
 // starting or stopping the live aggregator so the toggle takes effect immediately.
 func (a *App) SetDesktopMetrics(enabled bool) error {
 	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopMetrics(enabled) }); err != nil {
@@ -1527,7 +1670,10 @@ func (a *App) SetDesktopMetrics(enabled bool) error {
 	}
 	switch {
 	case enabled && a.metrics.Load() == nil && version != "dev":
-		a.metrics.Store(newMetricsAggregator(filepath.Dir(config.UserConfigPath())))
+		a.metrics.Store(newMetricsAggregator(config.MemoryUserDir()))
+		if cfg, err := config.Load(); err == nil {
+			a.recordSettingsMetricsSnapshot(cfg)
+		}
 	case !enabled:
 		a.metrics.Store(nil)
 	}
