@@ -22319,33 +22319,16 @@ a[href] {
   z-index: var(--z-local-backdrop);
 }
 
-/* statusbar overrides */
-.statusbar__group--geo .geodots {
-  margin-right: 0;
-  gap: 6px;
-}
-.statusbar__group--geo .geodot__icon {
-  width: 13px;
-  height: 13px;
-}
-.statusbar__group--geo .geodot__badge {
-  top: -1px;
-  right: -1px;
-  width: 4px;
-  height: 4px;
-}
-
 .geodot__popover {
   position: absolute;
-  top: 100%;
+  bottom: 100%;
   right: 0;
-  margin-top: 4px;
+  margin-bottom: 4px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
   min-width: 220px;
-  z-index: var(--z-local-popover);
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
 }
 
@@ -22381,49 +22364,5 @@ a[href] {
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 140px;
-}
-
-/* ── GeoMapViewer ──────────────────────────────────────────── */
-
-.geomap {
-  display: flex;
-  flex-direction: column;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-
-.geomap__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-
-.geomap__basemap {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 11px;
-}
-
-.geomap__canvas {
-  width: 100%;
-  height: 360px;
-  min-height: 200px;
-}
-
-.geomap__info {
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--fg-faint);
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
+  max-width: 160px;
 }
