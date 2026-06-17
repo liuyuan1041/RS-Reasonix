@@ -43,7 +43,6 @@ import { AskCard } from "./components/AskCard";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
 import { StatusBar } from "./components/StatusBar";
-
 import { HistoryPanel } from "./components/HistoryPanel";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { SettingsPanel, type SettingsInitialFocus } from "./components/SettingsPanel";
