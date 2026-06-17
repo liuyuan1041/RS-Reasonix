@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,10 +16,17 @@ func isolateUserConfigHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	return home
+}
+
+func expectedDefaultReasonixHome(home string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Roaming", "reasonix")
+	}
+	return filepath.Join(home, ".reasonix")
 }
 
 func TestUserConfigDisplayPathCollapsesHome(t *testing.T) {
@@ -35,12 +43,48 @@ func TestUserConfigDisplayPathCollapsesHome(t *testing.T) {
 	}
 }
 
+func TestUserConfigPathUsesReasonixHome(t *testing.T) {
+	home := isolateUserConfigHome(t)
+	want := filepath.Join(expectedDefaultReasonixHome(home), "config.toml")
+	if got := UserConfigPath(); filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("UserConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestUserConfigPathHonorsReasonixHome(t *testing.T) {
+	home := isolateUserConfigHome(t)
+	custom := filepath.Join(home, "custom-home")
+	t.Setenv("REASONIX_HOME", custom)
+
+	want := filepath.Join(custom, "config.toml")
+	if got := UserConfigPath(); filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("UserConfigPath() = %q, want %q", got, want)
+	}
+}
+
 func TestRenderTOMLHeaderShowsResolvedConfigPath(t *testing.T) {
 	isolateUserConfigHome(t)
 	out := RenderTOML(Default())
 	want := "> " + userConfigDisplayPath() + " > built-in defaults."
 	if !strings.Contains(out, want) {
 		t.Fatalf("rendered header missing resolved config path %q", want)
+	}
+}
+
+func TestWriteRootsForRootExcludesUserConfigDirByDefault(t *testing.T) {
+	isolateUserConfigHome(t)
+	project := t.TempDir()
+	cfg := Default()
+
+	roots := cfg.WriteRootsForRoot(project)
+	want := filepath.Clean(filepath.Dir(UserConfigPath()))
+	for _, root := range roots {
+		if filepath.Clean(root) == want {
+			t.Fatalf("WriteRootsForRoot() = %v, must not include user config dir %q by default", roots, want)
+		}
+	}
+	if got := filepath.Clean(roots[0]); got != filepath.Clean(project) {
+		t.Fatalf("first write root = %q, want project %q", got, project)
 	}
 }
 
@@ -96,8 +140,6 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Skills.ExcludedPaths = []string{"~/.agents/skills"}
 	orig.Skills.DisabledSkills = []string{"review", "explore"}
 	orig.Skills.MaxDepth = 2
-	orig.Codegraph = CodegraphConfig{Enabled: true, AutoInstall: false, Path: "/opt/codegraph", Tier: "background"}
-	orig.BuiltInMCPUpdates = BuiltInMCPUpdatesConfig{Mode: BuiltInMCPUpdateModeDownload, CheckInterval: "12h"}
 	orig.Bot.ToolApprovalMode = "auto"
 	orig.Bot.Connections = []BotConnectionConfig{{
 		ID:               "feishu-lark",
@@ -237,24 +279,6 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Agent.SystemPrompt != orig.Agent.SystemPrompt {
 		t.Errorf("system_prompt mismatch:\n got %q\nwant %q", got.Agent.SystemPrompt, orig.Agent.SystemPrompt)
-	}
-	if !got.Codegraph.Enabled {
-		t.Error("codegraph.enabled = false, want true")
-	}
-	if got.Codegraph.AutoInstall {
-		t.Error("codegraph.auto_install = true, want false")
-	}
-	if got.Codegraph.Path != "/opt/codegraph" {
-		t.Errorf("codegraph.path = %q, want /opt/codegraph", got.Codegraph.Path)
-	}
-	if got.Codegraph.Tier != "" {
-		t.Errorf("codegraph.tier = %q, want migrated empty", got.Codegraph.Tier)
-	}
-	if got.BuiltInMCPUpdates.ResolvedMode() != BuiltInMCPUpdateModeDownload {
-		t.Errorf("builtin_mcp_updates.mode = %q, want download", got.BuiltInMCPUpdates.ResolvedMode())
-	}
-	if got.BuiltInMCPUpdates.ResolvedCheckInterval() != "12h0m0s" {
-		t.Errorf("builtin_mcp_updates.check_interval = %q, want 12h0m0s", got.BuiltInMCPUpdates.ResolvedCheckInterval())
 	}
 	if !got.LSP.Enabled {
 		t.Error("lsp.enabled = false, want true")
@@ -463,14 +487,14 @@ func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
 	c.Desktop.CheckUpdates = boolPtr(false)
 
 	user := RenderTOMLForScope(c, RenderScopeUser)
-	for _, want := range []string{"config_version = 3", "[desktop]", `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `check_updates = false`, "[notifications]", "[builtin_mcp_updates]"} {
+	for _, want := range []string{"config_version = 3", "[desktop]", `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `check_updates = false`, "[notifications]"} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("user render missing %q:\n%s", want, user)
 		}
 	}
 
 	project := RenderTOMLForScope(c, RenderScopeProject)
-	for _, forbidden := range []string{"[desktop]", "[notifications]", "[builtin_mcp_updates]", "close_behavior =", "check_updates ="} {
+	for _, forbidden := range []string{"[desktop]", "[notifications]", "close_behavior =", "check_updates ="} {
 		if strings.Contains(project, forbidden) {
 			t.Fatalf("project render should not contain %q:\n%s", forbidden, project)
 		}
@@ -648,8 +672,8 @@ func TestRenderTOMLNonDefaultStepsWrittenExplicitly(t *testing.T) {
 }
 
 func TestRenderTOMLDefaultStepsDoNotOverrideGlobalConfig(t *testing.T) {
-	home := isolateUserConfigHome(t)
-	globalDir := filepath.Join(home, ".config", "reasonix")
+	isolateUserConfigHome(t)
+	globalDir := filepath.Dir(UserConfigPath())
 	if err := os.MkdirAll(globalDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

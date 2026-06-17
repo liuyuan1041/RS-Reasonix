@@ -55,6 +55,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# language      = \"zh\"   # ui/model language; empty = auto-detect from $LANG / $REASONIX_LANG\n")
 	}
+	if scope != RenderScopeProject {
+		fmt.Fprintf(&b, "credentials_store = %q   # auto|keyring|file; auto prefers the OS keychain and falls back to ~/.reasonix/credentials\n", normalizeCredentialsStore(c.CredentialsStore))
+	}
 	b.WriteString("\n")
 
 	if shouldRenderUI(c, defaults, scope) {
@@ -100,7 +103,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "status_bar_items = %s   # desktop: ordered visible bottom status bar items\n", renderStringArray(c.DesktopStatusBarItems()))
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping (install id + version + OS); never content\n", c.DesktopTelemetry())
-		fmt.Fprintf(&b, "metrics = %v   # desktop: opt-in aggregate agent metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
+		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate desktop metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
@@ -324,28 +327,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("[tools.background_jobs]\n")
 	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # warn once per background job after this many quiet seconds; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
 
-	b.WriteString("[codegraph]\n")
-	fmt.Fprintf(&b, "enabled      = %v   # built-in MCP server; off by default for first-run sessions\n", c.Codegraph.Enabled)
-	fmt.Fprintf(&b, "auto_install = %v   # fetch the runtime when CodeGraph is enabled but missing\n", c.Codegraph.AutoInstall)
-	if c.Codegraph.Path != "" {
-		fmt.Fprintf(&b, "path         = %q   # optional launcher override\n", c.Codegraph.Path)
-	} else {
-		b.WriteString("# path       = \"\"   # empty = cache, then PATH, then a bundle beside reasonix\n")
-	}
-	b.WriteString("\n")
-
-	b.WriteString("[builtin_mcp]\n")
-	fmt.Fprintf(&b, "time_enabled = %v   # built-in Time MCP; off until manually enabled\n", c.BuiltInMCP.TimeEnabled)
-	fmt.Fprintf(&b, "context7_enabled = %v   # built-in Context7 MCP; off until manually enabled\n", c.BuiltInMCP.Context7Enabled)
-	b.WriteString("\n")
-
-	if scope != RenderScopeProject {
-		b.WriteString("[builtin_mcp_updates]\n")
-		fmt.Fprintf(&b, "mode = %q   # off|notify|download|auto_next_session; auto never hot-swaps active sessions\n", c.BuiltInMCPUpdates.ResolvedMode())
-		fmt.Fprintf(&b, "check_interval = %q   # minimum interval between desktop startup background checks\n", c.BuiltInMCPUpdates.ResolvedCheckInterval())
-		b.WriteString("\n")
-	}
-
 	renderLSPConfig(&b, c.LSP)
 
 	b.WriteString("[skills]\n")
@@ -386,7 +367,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 
 	b.WriteString("[sandbox]\n")
 	b.WriteString("# Confine tool blast radius. File-writers (write_file/edit_file/multi_edit/move_file)\n")
-	b.WriteString("# may only write under workspace_root (empty = current dir) + allow_write.\n")
+	b.WriteString("# may only write under workspace_root (empty = current dir) and allow_write extras.\n")
 	b.WriteString("# bash = \"enforce\" (default) jails each command in an OS sandbox (macOS now;\n")
 	b.WriteString("# graceful fallback elsewhere); \"off\" disables it. network allows egress.\n")
 	if c.Sandbox.WorkspaceRoot != "" {
@@ -602,13 +583,14 @@ func projectScopedConfigForRender(c *Config) *Config {
 		return c
 	}
 	cp := *c
-	cp.Providers = make([]ProviderEntry, 0, len(c.Providers))
+	cp.Providers = make([]ProviderEntry, 0, len(c.Providers)+len(c.shadowedProjectProviders))
 	for _, p := range c.Providers {
 		if c.providerSources[providerMergeKey(p)] == providerSourceUser {
 			continue
 		}
 		cp.Providers = append(cp.Providers, p)
 	}
+	cp.Providers = append(cp.Providers, c.shadowedProjectProviders...)
 	return &cp
 }
 

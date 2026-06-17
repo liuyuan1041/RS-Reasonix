@@ -237,6 +237,8 @@ export interface ChangedFileInfo {
 export interface HistoryMessage {
   role: string;
   content: string;
+  submitText?: string;
+  createdAt?: number;
   reasoning?: string;
   level?: "info" | "warn";
   toolCalls?: HistoryToolCall[];
@@ -475,6 +477,7 @@ export interface GitCommitDetailView {
 export interface ComposerInsertRequest {
   id: number;
   text: string;
+  mode?: "insert" | "replace";
 }
 
 // MCP & Skills drawer (desktop/app.go Capabilities) — the GUI counterpart to
@@ -533,22 +536,9 @@ export interface CapabilitiesView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
 }
-export interface BuiltInMCPUpdateResult {
-  name: string;
-  version: string;
-  path: string;
-}
-
-export type BuiltInMCPUpdatePhase = "current" | "available" | "downloaded" | "activated" | "skipped" | "error";
-
-export interface BuiltInMCPUpdateStatus {
-  name: string;
-  mode: string;
-  current: string;
-  latest: string;
-  phase: BuiltInMCPUpdatePhase;
-  path?: string;
-  err?: string;
+export interface SkillsSettingsView {
+  skills: SkillView[];
+  skillRoots: SkillRootView[];
 }
 export interface MCPServerInput {
   name: string;
@@ -667,6 +657,10 @@ export interface ProviderView {
   default: string;
   apiKeyEnv: string;
   keySet: boolean; // the env var currently resolves to a value
+  requiresKey?: boolean; // false for explicit no-auth providers
+  configured?: boolean; // selectable: key is set or no key is required
+  keySource?: string;
+  keySourcePath?: string;
   balanceUrl: string; // optional wallet-balance endpoint; "" disables the readout
   contextWindow: number;
   reasoningProtocol: string; // auto|deepseek|openai|none; empty = auto/model registry
@@ -903,7 +897,7 @@ export interface SettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   telemetry: boolean; // anonymous launch ping (install id + version + OS)
-  metrics: boolean; // opt-in aggregate agent metrics (anonymous signal/bucket counts)
+  metrics: boolean; // aggregate desktop metrics (anonymous signal/bucket counts)
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
   autoApproveTools: boolean;
@@ -911,20 +905,32 @@ export interface SettingsView {
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;
-// UpdateProgress streams on the "updater:progress" event during ApplyUpdate.
+// UpdateProgress streams on the "updater:progress" event during download/install.
 export interface UpdateInfo {
   available: boolean;
   current: string;
   latest: string;
   notes: string;
-  canSelfUpdate: boolean; // win/linux true; macOS false (no cert → manual download)
+  channel: string;
+  canSelfUpdate: boolean; // macOS true only for signed/notarized builds
+  manualOnly?: boolean;
+  manualReason?: string;
+  downloaded: boolean;
   downloadUrl: string; // human-facing releases page (macOS path / fallback link)
   assetSize: number; // running platform's artifact size, for the progress bar
   err?: string; // set when the check itself failed (both endpoints down)
 }
 
+export interface UpdateDownloadResult {
+  version: string;
+  channel: string;
+  path: string;
+  size: number;
+  sha256: string;
+}
+
 export interface UpdateProgress {
-  phase: "downloading" | "verifying" | "applying" | "done" | "error";
+  phase: "downloading" | "verifying" | "downloaded" | "installing" | "done" | "error";
   received: number;
   total: number;
   err?: string;
