@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GeoStatusProvider } from "./components/geo/GeoStatusDots";
-import { installGlobalCrashHandlers } from "./lib/crash";
+import { installGlobalCrashHandlers, installPerformancePressureMonitor } from "./lib/crash";
+import { installWailsNonFileDragErrorSuppression } from "./lib/bridge";
 import { installBreadcrumbConsoleHook } from "./lib/breadcrumbs";
 import { installMessageSelectionCopy } from "./lib/messageSelectionCopy";
 import { LocaleProvider } from "./lib/i18n";
@@ -15,10 +16,29 @@ import "./styles.css";
 
 // Install first so startup/runtime failures paint a useful error instead of a
 // featureless webview background, with the recent console trail attached.
+installWailsNonFileDragErrorSuppression();
 installGlobalCrashHandlers();
 installBreadcrumbConsoleHook();
+installPerformancePressureMonitor();
 
 // Apply the saved appearance (auto/light/dark) before the first paint.
+function initTypographyPlatform() {
+  if (typeof document === "undefined" || typeof navigator === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  const override = params.get("platform");
+  const marker = `${navigator.platform} ${navigator.userAgent}`;
+  const platform =
+    override === "darwin" || override === "windows" || override === "linux"
+      ? override
+      : /Win/i.test(marker)
+        ? "windows"
+        : /Mac/i.test(marker)
+          ? "darwin"
+          : "linux";
+  document.documentElement.setAttribute("data-platform", platform);
+}
+
+initTypographyPlatform();
 initTheme();
 initTextSize();
 initFontFamily();
