@@ -2360,12 +2360,6 @@ func retargetDesktopOfficialRef(ref string, access map[string]bool) string {
 	}
 }
 
-// AppDir is the application data directory name (used for config, sessions,
-// credentials, etc.). Changed from upstream "reasonix" to "rs-reasonix" for
-// the rebranded fork. Migration from the old directory is handled by
-// migrateLegacyAppDir.
-const AppDir = "rs-reasonix"
-
 func userConfigPath() string {
 	dir := userConfigDir()
 	if dir == "" {
@@ -2373,6 +2367,11 @@ func userConfigPath() string {
 	}
 	return filepath.Join(dir, "config.toml")
 }
+
+// AppDir is the application data directory name (used for config, sessions,
+// credentials, archive, cache). Changed from "reasonix" to keep RS-Reasonix
+// data separate from upstream Reasonix.
+const AppDir = "rs-reasonix"
 
 func userConfigDir() string {
 	return reasonixHomeDir()
@@ -2392,7 +2391,7 @@ func reasonixHomeDir() string {
 	if dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix")
+	return filepath.Join(dir, "rs-reasonix")
 }
 
 func userConfigLoadPath() string {
@@ -2461,10 +2460,10 @@ func legacyXDGConfigPaths() []string {
 		paths = append(paths, path)
 	}
 	if dir := cleanEnvDir("XDG_CONFIG_HOME"); dir != "" {
-		add(filepath.Join(dir, "reasonix", "config.toml"))
+		add(filepath.Join(dir, "rs-reasonix", "config.toml"))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		add(filepath.Join(home, ".config", "reasonix", "config.toml"))
+		add(filepath.Join(home, ".config", "rs-reasonix", "config.toml"))
 	}
 	return paths
 }
@@ -2481,7 +2480,7 @@ func legacyOSSupportDir() string {
 	if dir == "" {
 		return ""
 	}
-	path := filepath.Join(dir, "reasonix")
+	path := filepath.Join(dir, "rs-reasonix")
 	if current := reasonixHomeDir(); current != "" && samePath(path, current) {
 		return ""
 	}
@@ -2496,7 +2495,7 @@ func userCacheDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "reasonix")
+	return filepath.Join(dir, "rs-reasonix")
 }
 
 func osUserConfigDir() string {
@@ -2504,9 +2503,6 @@ func osUserConfigDir() string {
 	if err != nil {
 		return ""
 	}
-<<<<<<< HEAD
-	return filepath.Join(dir, AppDir, "config.toml")
-=======
 	return dir
 }
 
@@ -2546,7 +2542,6 @@ func samePath(a, b string) bool {
 		b = bb
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
->>>>>>> upstream/main-v2
 }
 
 // userConfigDisplayPath is userConfigPath collapsed to a ~-relative form for
@@ -2615,11 +2610,7 @@ func UserCredentialsPath() string {
 	if dir == "" {
 		return ""
 	}
-<<<<<<< HEAD
-	return filepath.Join(dir, AppDir, "credentials")
-=======
 	return filepath.Join(dir, "credentials")
->>>>>>> upstream/main-v2
 }
 
 // ArchiveDir is where compacted conversation history is archived for
@@ -2630,11 +2621,7 @@ func ArchiveDir() string {
 	if dir == "" {
 		return ""
 	}
-<<<<<<< HEAD
-	return filepath.Join(dir, AppDir, "archive")
-=======
 	return filepath.Join(dir, "archive")
->>>>>>> upstream/main-v2
 }
 
 // SessionDir is where chat sessions are persisted (one .jsonl per session).
@@ -2645,11 +2632,7 @@ func SessionDir() string {
 	if dir == "" {
 		return ""
 	}
-<<<<<<< HEAD
-	return filepath.Join(dir, AppDir, "sessions")
-=======
 	return filepath.Join(dir, "sessions")
->>>>>>> upstream/main-v2
 }
 
 // ProjectSessionDir is the per-workspace session directory the desktop sidebar
@@ -2681,26 +2664,14 @@ func CacheDir() string {
 	if dir == "" {
 		return ""
 	}
-<<<<<<< HEAD
-	return filepath.Join(dir, AppDir, "cache")
-=======
 	return dir
->>>>>>> upstream/main-v2
 }
 
 // MemoryUserDir returns the reasonix user state root (…/reasonix), under which
 // the user-global REASONIX.md and the per-project auto-memory store live. Empty
 // when the user state dir can't be resolved, which disables user-scoped memory.
 func MemoryUserDir() string {
-<<<<<<< HEAD
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, AppDir)
-=======
 	return userSupportDir()
->>>>>>> upstream/main-v2
 }
 
 // ConventionDirs are the parent directories scanned for agent assets (skills,
@@ -2763,10 +2734,6 @@ func CommandDirsForRoot(root string) []string {
 			add(dir)
 		}
 	}
-<<<<<<< HEAD
-	if dir, err := os.UserConfigDir(); err == nil {
-		dirs = append(dirs, filepath.Join(dir, AppDir, "commands")) // legacy XDG user dir
-=======
 	if dir := userConfigDir(); dir != "" {
 		add(filepath.Join(dir, "commands"))
 	}
@@ -2775,7 +2742,6 @@ func CommandDirsForRoot(root string) []string {
 	}
 	for _, dir := range conventionSubdirsAsc(root, "commands") {
 		add(dir)
->>>>>>> upstream/main-v2
 	}
 	return dirs
 }

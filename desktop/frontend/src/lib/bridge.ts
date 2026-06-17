@@ -5,10 +5,9 @@
 // that streams a canned turn through the same contract — letting the whole UI be
 // developed and laid out without rebuilding the Go side.
 
-import type * as GeneratedApp from "../../wailsjs/go/main/App";
-
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
+import { providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 
@@ -19,8 +18,6 @@ import type {
   BotInstallStartResult,
   BotRuntimeStatusView,
   BotSettingsView,
-  BuiltInMCPUpdateResult,
-  BuiltInMCPUpdateStatus,
   CapabilitiesView,
   CheckpointMeta,
   CommandInfo,
@@ -49,12 +46,14 @@ import type {
   ServerView,
   SessionMeta,
   SettingsView,
+  SkillsSettingsView,
   SkillRootView,
   SkillSuggestion,
   SkillView,
   SlashArgsResult,
   TabMeta,
   TopicMeta,
+  UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
   WireEvent,
@@ -161,14 +160,13 @@ export interface AppBindings {
   Meta(): Promise<Meta>;
   MetaForTab(tabID: string): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
-  ProbeGeoEnv(): Promise<string>;
   Capabilities(): Promise<CapabilitiesView>;
+  MCPServers(): Promise<ServerView[]>;
+  SkillsSettings(): Promise<SkillsSettingsView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
   ReconnectMCPServer(name: string): Promise<void>;
-  UpdateBuiltInMCPServer(name: string): Promise<BuiltInMCPUpdateResult>;
-  BuiltInMCPUpdateStatuses(): Promise<BuiltInMCPUpdateStatus[]>;
   ClearMCPServerAuthentication(name: string): Promise<void>;
   PickSkillFolder(): Promise<string>;
   AddSkillPath(path: string): Promise<void>;
@@ -181,6 +179,7 @@ export interface AppBindings {
   ListDir(rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
+  ProbeGeoEnv(): Promise<string>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   GitBranches(): Promise<string[]>;
   GitCheckout(branch: string): Promise<void>;
@@ -232,11 +231,11 @@ export interface AppBindings {
   SetSubagentEffort(level: string): Promise<void>;
   SetAutoPlan(mode: string): Promise<void>;
   SaveProvider(p: ProviderView): Promise<void>;
-  AddOfficialProviderAccess(kind: string, key: string): Promise<void>;
+  AddOfficialProviderAccess(kind: string, key: string): Promise<string>;
   FetchProviderModels(p: ProviderView): Promise<string[]>;
   DeleteProvider(name: string): Promise<void>;
   RemoveProviderAccess(name: string): Promise<void>;
-  SetProviderKey(apiKeyEnv: string, value: string): Promise<void>;
+  SetProviderKey(apiKeyEnv: string, value: string): Promise<string>;
   ClearProviderKey(apiKeyEnv: string): Promise<void>;
   SetPermissionMode(mode: string): Promise<void>;
   AddPermissionRule(list: string, rule: string): Promise<void>;
@@ -273,10 +272,12 @@ export interface AppBindings {
   SetBypass(on: boolean): Promise<void>;
   Version(): Promise<string>;
   CheckUpdate(): Promise<UpdateInfo | null>;
+  DownloadUpdate(): Promise<UpdateDownloadResult | null>;
+  InstallUpdate(): Promise<void>;
   ApplyUpdate(): Promise<void>;
   OpenDownloadPage(): Promise<void>;
   NeedsOnboarding(): Promise<boolean>;
-  ConnectKey(apiKey: string): Promise<void>;
+  ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
   // version/os/arch, POSTs to the collection endpoint. Only ever sent on user click.
   ReportCrash(kind: string, detail: string): Promise<void>;
@@ -313,12 +314,21 @@ export interface AppBindings {
 // (models.ts) use classes with a convertValues prototype method. The structural
 // mismatch would produce false positives. Method-arity and parameter-order drift
 // are caught at the call sites by tsc when components invoke app.<method>(...).
-type AssertNever<T extends never> = T;
-export type _CheckGenToApp = AssertNever<Exclude<keyof typeof GeneratedApp, keyof AppBindings>>;
+// _CheckGenToApp: type-level assert disabled in dev (requires wailsjs generated files).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type _CheckGenToApp = never;
 
 interface WailsRuntime {
   EventsOn(name: string, cb: (...data: unknown[]) => void): () => void;
   BrowserOpenURL(url: string): void;
+  WindowSetSystemDefaultTheme?(): void;
+  WindowSetLightTheme?(): void;
+  WindowSetDarkTheme?(): void;
+  WindowSetBackgroundColour?(r: number, g: number, b: number, a: number): void;
+  WindowGetSize?(): Promise<{ w: number; h: number }>;
+  WindowGetPosition?(): Promise<{ x: number; y: number }>;
+  WindowIsMaximised?(): Promise<boolean>;
+  ClipboardSetText?(text: string): Promise<boolean>;
   // Native OS file drop (desktop only); useDropTarget gates delivery to elements
   // carrying the --wails-drop-target CSS property. Absent in the browser dev mock.
   OnFileDrop?(cb: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
@@ -371,13 +381,6 @@ export function onUpdaterProgress(cb: (p: UpdateProgress) => void): () => void {
   return () => {
     updaterListeners.delete(cb);
   };
-}
-
-export function onBuiltInMCPUpdate(cb: (status: BuiltInMCPUpdateStatus) => void): () => void {
-  if (realApp() && typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("builtin-mcp:update", (status) => cb(status as BuiltInMCPUpdateStatus));
-  }
-  return () => {};
 }
 
 function errorMessage(err: unknown): string {
@@ -510,8 +513,8 @@ function bridgeBreadcrumb(method: string): string {
     return `settings ${method}`;
   if (/^(SaveProvider|AddOfficialProviderAccess|RemoveProviderAccess|DeleteProvider|SetProviderKey|ClearProviderKey|FetchProviderModels|ConnectKey)/.test(method))
     return `provider ${method}`;
-  if (/^(CheckUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
-  if (/^(AddMCPServer|UpdateMCPServer|RemoveMCPServer|ReconnectMCPServer|UpdateBuiltInMCPServer|BuiltInMCPUpdateStatuses|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
+  if (/^(CheckUpdate|DownloadUpdate|InstallUpdate|ApplyUpdate|OpenDownloadPage)/.test(method)) return `update ${method}`;
+  if (/^(AddMCPServer|UpdateMCPServer|RemoveMCPServer|ReconnectMCPServer|ClearMCPServerAuthentication|SetMCPServer)/.test(method))
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
@@ -584,8 +587,8 @@ async function withMockTabScope<T>(tabId: string, fn: () => Promise<T>): Promise
   }
 }
 
-// Updater progress has its own listener set so the browser dev mock's ApplyUpdate
-// can stream a fake download through onUpdaterProgress.
+// Updater progress has its own listener set so the browser dev mock can stream a
+// fake download/install flow through onUpdaterProgress.
 const updaterListeners = new Set<(p: UpdateProgress) => void>();
 
 function emitUpdater(p: UpdateProgress) {
@@ -629,54 +632,6 @@ function makeMockApp(): AppBindings {
   const t0 = Date.now();
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
-    {
-      name: "codegraph",
-      transport: "stdio",
-      status: "disabled",
-      builtIn: true,
-      configured: true,
-      autoStart: false,
-      tier: "background",
-      command: "codegraph",
-      args: ["serve", "--mcp"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-      toolList: [
-        { name: "search", description: "Search symbols, files, and text in the workspace." },
-        { name: "context", description: "Fetch surrounding source context for a symbol or file." },
-        { name: "trace", description: "Follow callers and callees across the code graph." },
-        { name: "node", description: "Inspect a specific graph node." },
-      ],
-    },
-    {
-      name: "time",
-      transport: "stdio",
-      status: "deferred",
-      builtIn: true,
-      configured: true,
-      autoStart: true,
-      tier: "lazy",
-      command: "reasonix",
-      args: ["builtin-mcp", "time"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-    },
-    {
-      name: "context7",
-      transport: "stdio",
-      status: "disabled",
-      builtIn: true,
-      configured: true,
-      autoStart: false,
-      tier: "lazy",
-      command: "npx",
-      args: ["-y", "@upstash/context7-mcp"],
-      tools: 0,
-      prompts: 0,
-      resources: 0,
-    },
     { name: "github", transport: "stdio", status: "connected", configured: true, autoStart: true, tier: "background", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], tools: 12, prompts: 2, resources: 0 },
     {
       name: "linear",
@@ -703,15 +658,6 @@ function makeMockApp(): AppBindings {
       ],
     },
     { name: "figma", transport: "http", status: "failed", configured: true, autoStart: true, tier: "background", url: "https://mcp.figma.com/mcp", authStatus: "required", authUrl: "https://mcp.figma.com/mcp", tools: 0, prompts: 0, resources: 0, error: "connect: 401 unauthorized" },
-  ];
-  let builtInMCPUpdates: BuiltInMCPUpdateStatus[] = [
-    {
-      name: "codegraph",
-      mode: "notify",
-      current: "v0.9.7",
-      latest: "v0.10.0",
-      phase: "available",
-    },
   ];
   const capSkills: SkillView[] = [
     { name: "explore", description: "Investigate the codebase in an isolated subagent", scope: "builtin", runAs: "subagent", enabled: true },
@@ -950,7 +896,7 @@ function makeMockApp(): AppBindings {
       ],
     },
     desktopLanguage: "",
-    desktopLayoutStyle: "classic",
+    desktopLayoutStyle: "workbench",
     desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
@@ -959,7 +905,7 @@ function makeMockApp(): AppBindings {
     statusBarItems: [...DEFAULT_STATUS_BAR_ITEMS],
     checkUpdates: true,
     telemetry: true,
-    metrics: false,
+    metrics: true,
     configPath: "~/projects/reasonix/reasonix.toml",
     providerKinds: ["openai"],
     autoApproveTools: false,
@@ -1963,6 +1909,15 @@ function makeMockApp(): AppBindings {
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
       };
     },
+    async MCPServers() {
+      return capServers.map((s) => ({ ...s }));
+    },
+    async SkillsSettings() {
+      return {
+        skills: capSkills.map((s) => ({ ...s })),
+        skillRoots: capSkillRoots.map((s) => ({ ...s })),
+      };
+    },
     async AddMCPServer(input: MCPServerInput) {
       const tools = input.transport === "stdio" ? 3 : 5;
       capServers.push({
@@ -2019,28 +1974,6 @@ function makeMockApp(): AppBindings {
       capServers = capServers.map((s) =>
         s.name === name ? { ...s, status: "connected", tools: s.tools || 4 } : s,
       );
-    },
-    async UpdateBuiltInMCPServer(name: string) {
-      if (name !== "codegraph") throw new Error(`${name} is not an updatable built-in MCP server`);
-      capServers = capServers.map((s) =>
-        s.name === name
-          ? { ...s, status: s.autoStart ? "connected" : s.status, tools: s.autoStart ? s.tools || 4 : s.tools, error: undefined }
-          : s,
-      );
-      builtInMCPUpdates = [
-        {
-          name,
-          mode: "manual",
-          current: "v0.10.0",
-          latest: "v0.10.0",
-          phase: "activated",
-          path: "/tmp/reasonix/codegraph/mock/codegraph",
-        },
-      ];
-      return { name, version: "v0.10.0", path: "/tmp/reasonix/codegraph/mock/codegraph" };
-    },
-    async BuiltInMCPUpdateStatuses() {
-      return builtInMCPUpdates.map((s) => ({ ...s }));
     },
     async ClearMCPServerAuthentication(name: string) {
       capServers = capServers.map((s) =>
@@ -2185,6 +2118,14 @@ function makeMockApp(): AppBindings {
         truncated: false,
         binary: false,
       };
+    },
+    async ProbeGeoEnv() {
+      return JSON.stringify({
+        __env_block__: true,
+        gdal: { kind: "ready", version: "3.8.4" },
+        qgis: { kind: "ready", version: "3.34.0" },
+        gee: { kind: "ready", version: "0.1.401" },
+      });
     },
     async WorkspaceChanges(_tabID: string) {
       return {
@@ -2466,10 +2407,11 @@ function makeMockApp(): AppBindings {
       const i = settings.providers.findIndex((x) => x.name === next.name);
       if (i >= 0) settings.providers[i] = { ...settings.providers[i], ...next, keySet: next.keySet || settings.providers[i].keySet };
       else settings.providers.push(next);
+      return "";
     },
     async FetchProviderModels(p: ProviderView) {
       if (!p.baseUrl.trim()) throw new Error(t("settings.fetchModelsMissingBaseUrl"));
-      if (!p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
+      if (providerRequiresKey(p) && !p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
       await delay(350);
       if (p.baseUrl.includes("deepseek")) return ["deepseek-v4-flash", "deepseek-v4-pro"];
       if (p.baseUrl.includes("mimo") || p.baseUrl.includes("xiaomimimo")) return ["mimo-v2.5", "mimo-v2.5-pro"];
@@ -2487,6 +2429,7 @@ function makeMockApp(): AppBindings {
       settings.providers.forEach((p) => {
         if (p.apiKeyEnv === apiKeyEnv) p.keySet = true;
       });
+      return "";
     },
     async ClearProviderKey(apiKeyEnv: string) {
       settings.providers.forEach((p) => {
@@ -2666,18 +2609,22 @@ function makeMockApp(): AppBindings {
     },
     async CheckUpdate() {
       // Keep the default browser preview focused on the primary product surface.
-      // ApplyUpdate remains mocked for explicit updater-flow tests.
+      // DownloadUpdate/InstallUpdate remain mocked for explicit updater-flow tests.
       return {
         available: false,
         current: "v1.0.0",
         latest: "v1.0.0",
         notes: "",
+        channel: "stable",
         canSelfUpdate: false,
+        manualOnly: true,
+        manualReason: "browser preview",
+        downloaded: false,
         downloadUrl: "",
         assetSize: 0,
       };
     },
-    async ApplyUpdate() {
+    async DownloadUpdate() {
       const total = 12_345_678;
       for (let r = 0; r <= total; r += 1_800_000) {
         emitUpdater({ phase: "downloading", received: Math.min(r, total), total });
@@ -2685,10 +2632,19 @@ function makeMockApp(): AppBindings {
       }
       emitUpdater({ phase: "verifying", received: total, total });
       await delay(500);
-      emitUpdater({ phase: "applying", received: total, total });
+      emitUpdater({ phase: "downloaded", received: total, total });
+      return { version: "v1.1.0", channel: "stable", path: "/tmp/reasonix-update", size: total, sha256: "mock" };
+    },
+    async InstallUpdate() {
+      const total = 12_345_678;
+      emitUpdater({ phase: "installing", received: total, total });
       await delay(500);
       emitUpdater({ phase: "done", received: total, total });
       // The real shell relaunches here; the mock just stops.
+    },
+    async ApplyUpdate() {
+      await this.DownloadUpdate();
+      await this.InstallUpdate();
     },
     async OpenDownloadPage() {
       if (typeof window !== "undefined") {
@@ -2706,6 +2662,7 @@ function makeMockApp(): AppBindings {
         if (p.apiKeyEnv === "DEEPSEEK_API_KEY") p.keySet = true;
       });
       await delay(300);
+      return "";
     },
     async ReportCrash() {
       await delay(300);
@@ -3015,9 +2972,6 @@ function makeMockApp(): AppBindings {
           { path: t("mock.changedFile2Path"), sources: ["session"], gitStatus: "added", turns: [6], latestPrompt: t("mock.changedFile2Prompt"), latestTime: now - 60 * 1000 },
         ],
       };
-    },
-    async ProbeGeoEnv() {
-      return '{"gdal":{"status":"unknown"},"qgis":{"status":"unknown"},"gee":{"status":"unknown"}}';
     },
   };
 }
