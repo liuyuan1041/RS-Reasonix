@@ -1928,7 +1928,8 @@ func (a *App) ResumeSessionForTab(tabID, path string) ([]HistoryMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := agent.LoadSession(sessionPath); err != nil {
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
 		return nil, err
 	}
 	if sessionRuntimeKey(tab.currentSessionPath()) == sessionRuntimeKey(sessionPath) {
@@ -1936,7 +1937,7 @@ func (a *App) ResumeSessionForTab(tabID, path string) ([]HistoryMessage, error) 
 		return a.HistoryForTab(tabID), nil
 	}
 
-	if err := a.rebindTabToSessionPath(tab, sessionPath); err != nil {
+	if err := a.rebindTabToLoadedSessionPath(tab, sessionPath, loaded); err != nil {
 		return nil, err
 	}
 	a.setTabReadOnly(tab.ID, false)
@@ -1953,11 +1954,12 @@ func (a *App) OpenChannelSessionForTab(tabID, path string) ([]HistoryMessage, er
 	if err != nil {
 		return nil, err
 	}
-	if _, err := agent.LoadSession(sessionPath); err != nil {
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
 		return nil, err
 	}
 	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(sessionPath) {
-		if err := a.rebindTabToSessionPath(tab, sessionPath); err != nil {
+		if err := a.rebindTabToLoadedSessionPath(tab, sessionPath, loaded); err != nil {
 			return nil, err
 		}
 	}
@@ -1975,6 +1977,18 @@ func (a *App) setTabReadOnly(tabID string, readOnly bool) {
 }
 
 func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) error {
+	sessionPath = canonicalTabSessionPath(sessionPath)
+	if sessionPath == "" {
+		return fmt.Errorf("session path is required")
+	}
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		return err
+	}
+	return a.rebindTabToLoadedSessionPath(tab, sessionPath, loaded)
+}
+
+func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string, loaded *agent.Session) error {
 	if tab == nil {
 		return fmt.Errorf("tab is not ready")
 	}
@@ -1982,8 +1996,12 @@ func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) erro
 	if sessionPath == "" {
 		return fmt.Errorf("session path is required")
 	}
-	if _, err := agent.LoadSession(sessionPath); err != nil {
-		return err
+	if loaded == nil {
+		var err error
+		loaded, err = agent.LoadSession(sessionPath)
+		if err != nil {
+			return err
+		}
 	}
 	if sessionRuntimeKey(tab.currentSessionPath()) == sessionRuntimeKey(sessionPath) {
 		return nil
@@ -1999,7 +2017,7 @@ func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) erro
 		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		a.saveTabsLocked()
 		a.mu.Unlock()
-		a.buildTabController(tab)
+		a.buildTabControllerWithLoadedSession(tab, loadedTabSession{Path: sessionPath, Session: loaded})
 		if tab.Ctrl == nil {
 			if tab.StartupErr != "" {
 				return fmt.Errorf("resume session: %s", tab.StartupErr)
@@ -2028,7 +2046,7 @@ func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) erro
 	a.saveTabsLocked()
 	a.mu.Unlock()
 
-	a.buildTabController(tab)
+	a.buildTabControllerWithLoadedSession(tab, loadedTabSession{Path: sessionPath, Session: loaded})
 	if tab.Ctrl == nil {
 		if tab.StartupErr != "" {
 			return fmt.Errorf("resume session: %s", tab.StartupErr)
