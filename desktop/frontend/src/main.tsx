@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { GeoStatusProvider } from "./components/geo/GeoStatusDots";
 import { installGlobalCrashHandlers, installPerformancePressureMonitor } from "./lib/crash";
 import { installWailsNonFileDragErrorSuppression } from "./lib/bridge";
 import { installBreadcrumbConsoleHook } from "./lib/breadcrumbs";
@@ -82,7 +83,9 @@ createRoot(root).render(
     <ErrorBoundary>
       <LocaleProvider>
         <ToastProvider>
-          <App />
+          <GeoStatusProvider>
+            <App />
+          </GeoStatusProvider>
         </ToastProvider>
       </LocaleProvider>
     </ErrorBoundary>

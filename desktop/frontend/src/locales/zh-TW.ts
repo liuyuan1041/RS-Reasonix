@@ -37,7 +37,7 @@ export const zhTW: Record<DictKey, string> = {
   "sidebar.trash": "回收站",
   "sidebar.workspace": "工作區",
   "sidebar.changeWorkspace": "更改",
-  "sidebar.navigation": "Reasonix 導航",
+  "sidebar.navigation": "RS-Reasonix 導航",
   "sidebar.plugins": "插件",
   "sidebar.scheduledTasks": "定時任務",
   "sidebar.utilityActions": "側邊欄工具",
@@ -222,7 +222,7 @@ export const zhTW: Record<DictKey, string> = {
   "welcome.ex3": "智慧體的執行主循環在哪，它做了什麼？",
 
   // 輸入框
-  "composer.placeholder": "給 Reasonix 發訊息…  ( / 命令 · @ 檔案 )",
+  "composer.placeholder": "給 RS-Reasonix 發訊息…  ( / 命令 · @ 檔案 )",
   "composer.planMode": "計畫模式",
   "composer.planModeOn": "計畫模式已開",
   "composer.planHint": "shift+tab",
@@ -511,7 +511,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.shortcutsConflict": "{action} 與 {conflict} 衝突，請換一個快捷鍵。",
   "settings.closeBehavior": "關閉視窗時",
   "settings.closeBehavior.background": "保持背景執行",
-  "settings.closeBehavior.quit": "退出 Reasonix",
+  "settings.closeBehavior.quit": "退出 RS-Reasonix",
   "settings.desktopLayoutStyle": "桌面風格",
   "settings.desktopLayoutStyle.classic": "經典",
   "settings.desktopLayoutStyle.workbench": "工作臺",
@@ -678,7 +678,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.pageDesc.providers": "管理模型供應商、API 位址、金鑰與可用模型。",
   "settings.pageDesc.mcp": "管理 MCP 伺服器連線和工具發現。",
   "settings.pageDesc.skills": "瀏覽、啟用和管理智慧體技能與來源。",
-  "settings.pageDesc.memory": "管理 Reasonix 會長期參考的偏好、專案約定和指令檔案。",
+  "settings.pageDesc.memory": "管理 RS-Reasonix 會長期參考的偏好、專案約定和指令檔案。",
   "settings.pageDesc.network": "代理與網路設定。",
   "settings.pageDesc.permissions": "寫操作模式與細粒度工具權限規則。",
   "settings.pageDesc.sandbox": "Bash 沙箱、網路出口與工作區根目錄。",
@@ -708,7 +708,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.addProvider.chooseTitle": "新增供應商",
   "settings.addProvider.chooseHint": "選擇官方預設，或新增一個自訂 OpenAI-compatible 接入。",
   "settings.addProvider.officialChoice": "官方供應商",
-  "settings.addProvider.officialChoiceHint": "從 Reasonix 預設的 DeepSeek 與 Mimo 接入中選擇。",
+  "settings.addProvider.officialChoiceHint": "從 RS-Reasonix 預設的 DeepSeek 與 Mimo 接入中選擇。",
   "settings.addProvider.customChoice": "自訂供應商",
   "settings.addProvider.customChoiceHint": "按 base_url、模型、金鑰環境變數等參數手動設定。",
   "settings.addProvider.officialTitle": "新增官方供應商",
@@ -894,7 +894,7 @@ export const zhTW: Record<DictKey, string> = {
   "updater.dismiss": "稍後",
 
   // onboarding — first-run API-key overlay
-  "onboarding.title": "連線 Reasonix",
+  "onboarding.title": "連線 RS-Reasonix",
   "onboarding.tagline": "貼上一個 DeepSeek API key 即可開始。金鑰僅存於本應用的本機憑證檔案，不會傳送到任何地方。",
   "onboarding.inputLabel": "API 金鑰",
   "onboarding.inputPlaceholder": "sk-…",
@@ -941,7 +941,7 @@ export const zhTW: Record<DictKey, string> = {
   "context.durationMinutesSeconds": "{minutes}分{seconds}秒",
 
   // 崩潰兜底頁
-  "crash.title": "Reasonix 遇到錯誤 —— 請截圖傳送",
+  "crash.title": "RS-Reasonix 遇到錯誤 —— 請截圖傳送",
   "crash.copy": "複製",
 
   // 模擬/演示種子資料（僅瀏覽器開發模式）
@@ -977,7 +977,7 @@ export const zhTW: Record<DictKey, string> = {
   "mock.askQ1Opt2Desc": "放棄本地所有修改，強制與遠端同步",
   "mock.askQ1Opt3Label": "另建分支儲存變更",
   "mock.askQ1Opt3Desc": "先建立分支把本地變更儲存起來，再拉取主分支",
-  "mock.askQ2Header": "Reasonix 建構",
+  "mock.askQ2Header": "RS-Reasonix 建構",
   "mock.askQ2Prompt": "對於 reasonix 二進位檔案缺失的問題，你想怎麼做？",
   "mock.askQ2Opt1Label": "先查文件",
   "mock.askQ2Opt1Desc": "查看 README / 建構文件來確定正確的建構命令",
@@ -1177,7 +1177,7 @@ export const zhTW: Record<DictKey, string> = {
   "memory.type.reference": "引用",
   "memory.type.other": "其他",
   "memory.emptySavedTitle": "還沒有儲存的記憶",
-  "memory.emptySavedBody": "只儲存對後續 Reasonix 會話有幫助的長期背景。",
+  "memory.emptySavedBody": "只儲存對後續 RS-Reasonix 會話有幫助的長期背景。",
   "memory.suggestions": "候選建議",
   "memory.suggestionsHint": "從近期本地歷史中提取候選；確認前不會寫入記憶或 Skill。",
   "memory.scanSuggestions": "手動掃描歷史",
@@ -1311,7 +1311,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.botAdvancedSettings": "高階設定",
   "settings.botSaveAndEnable": "儲存並啟用",
   "settings.botInstallTitle": "掃碼連線",
-  "settings.botInstallSubtitle": "連線完成後即可在聊天裡呼叫 Reasonix。",
+  "settings.botInstallSubtitle": "連線完成後即可在聊天裡呼叫 RS-Reasonix。",
   "settings.botInstallPick": "選擇頻道",
   "settings.botInstallStarting": "正在生成二維碼…",
   "settings.botInstallScanHint": "請掃碼完成授權，連線會自動儲存。",

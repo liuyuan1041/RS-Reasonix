@@ -247,7 +247,7 @@ func (s *Store) disabledName(name string) bool {
 
 func normalizeMaxDepth(depth int) int {
 	const (
-		defaultDepth = 3
+		defaultDepth = 4
 		maxDepth     = 5
 	)
 	if depth == 0 {
