@@ -214,13 +214,13 @@ export const zhTW: Record<DictKey, string> = {
   "caps.hideDiagnostics": "隱藏診斷路徑",
 
   // 歡迎 / 空狀態
-  "welcome.tagline": "一個編碼智慧體 —— 描述任務或隨便問點什麼。",
+  "welcome.tagline": "遙感資料處理 · GIS 分析 · GEE 雲端運算",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用檔案",
   "welcome.hintSend": "傳送",
-  "welcome.ex1": "講講這個程式碼庫的架構",
-  "welcome.ex2": "總結最近的 git 變更",
-  "welcome.ex3": "智慧體的執行主循環在哪，它做了什麼？",
+  "welcome.ex1": "用 GEE 提取太湖藍藻分佈",
+  "welcome.ex2": "Sentinel-2 影像水體指數計算並匯出 GeoTIFF",
+  "welcome.ex3": "QGIS 裡怎麼做鑲嵌和裁剪？",
 
   // 輸入框
   "composer.placeholder": "給 RS-Reasonix 發訊息…  ( / 命令 · @ 檔案 )",
@@ -1141,8 +1141,8 @@ export const zhTW: Record<DictKey, string> = {
   "caps.failureGroupCommandUnavailable": "{count} 個命令不可用",
   "caps.failureGroupNetwork": "{count} 個網路/權限異常",
   "caps.failureGroupOther": "{count} 個其他異常",
-  "welcome.title": "一個編碼智慧體",
-  "welcome.ex4": "找出並修復這個專案裡的一個 bug",
+  "welcome.title": "歡迎使用 RS-Reasonix",
+  "welcome.ex4": "InSAR 形變監測資料預處理流程",
   "composer.normalMode": "對話模式",
   "composer.normalModeDesc": "直接對話或執行任務。",
   "composer.goalMode": "目標模式",

@@ -300,14 +300,14 @@ export const zh: Record<DictKey, string> = {
 
   // 欢迎 / 空状态
   "welcome.title": "欢迎使用 RS-Reasonix",
-  "welcome.tagline": "描述任务，或随便问点什么。",
+  "welcome.tagline": "遥感数据处理 · GIS 分析 · GEE 云端计算",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用文件",
   "welcome.hintSend": "发送",
-  "welcome.ex1": "讲讲这个代码库的架构",
-  "welcome.ex2": "总结最近的 git 改动",
-  "welcome.ex3": "智能体的运行主循环在哪，它做了什么？",
-  "welcome.ex4": "找出并修复这个项目里的一个 bug",
+  "welcome.ex1": "用 GEE 提取太湖蓝藻分布",
+  "welcome.ex2": "Sentinel-2 影像水体指数计算并导出 GeoTIFF",
+  "welcome.ex3": "QGIS 里怎么做镶嵌和裁剪？",
+  "welcome.ex4": "InSAR 形变监测数据预处理流程",
 
   // 输入框
   "composer.placeholder": "给 RS-Reasonix 发消息…  ( / 命令 · @ 文件 · ! 终端 )",

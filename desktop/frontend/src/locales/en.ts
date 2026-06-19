@@ -299,14 +299,14 @@ export const en = {
 
   // welcome / empty state
   "welcome.title": "Welcome to RS-Reasonix",
-  "welcome.tagline": "Remote sensing AI agent. Type /set to get started.",
+  "welcome.tagline": "Remote Sensing · GIS · GEE Cloud Computing",
   "welcome.hintCommands": "commands",
   "welcome.hintFiles": "reference files",
   "welcome.hintSend": "send",
-  "welcome.ex1": "Explain this codebase's architecture",
-  "welcome.ex2": "Summarize the recent git changes",
-  "welcome.ex3": "Where is the agent run loop, and what does it do?",
-  "welcome.ex4": "Find and fix a bug in this project",
+  "welcome.ex1": "Extract algal blooms in Taihu Lake using GEE",
+  "welcome.ex2": "Compute NDWI from Sentinel-2 and export as GeoTIFF",
+  "welcome.ex3": "How to mosaic and clip rasters in QGIS?",
+  "welcome.ex4": "InSAR deformation monitoring preprocessing workflow",
 
   // composer
   "composer.placeholder": "Message RS-Reasonix…  ( / commands · @ files · ! shell )",
