@@ -299,14 +299,14 @@ export const en = {
 
   // welcome / empty state
   "welcome.title": "Welcome to RS-Reasonix",
-  "welcome.tagline": "Remote Sensing · GIS · GEE Cloud Computing",
+  "welcome.tagline": "A remote-sensing AI agent built for long sessions and low cost. First time? Type /set to configure.",
   "welcome.hintCommands": "commands",
   "welcome.hintFiles": "reference files",
   "welcome.hintSend": "send",
-  "welcome.ex1": "Extract algal blooms in Taihu Lake using GEE",
-  "welcome.ex2": "Compute NDWI from Sentinel-2 and export as GeoTIFF",
-  "welcome.ex3": "How to mosaic and clip rasters in QGIS?",
-  "welcome.ex4": "InSAR deformation monitoring preprocessing workflow",
+  "welcome.ex1": "Show metadata for this .tif file",
+  "welcome.ex2": "Convert all shapefiles to GeoJSON",
+  "welcome.ex3": "Calculate NDVI for Sentinel-2 over Taihu Lake 2023",
+  "welcome.ex4": "Find Landsat 8 data for Beijing 2024",
 
   // composer
   "composer.placeholder": "Message RS-Reasonix…  ( / commands · @ files · ! shell )",

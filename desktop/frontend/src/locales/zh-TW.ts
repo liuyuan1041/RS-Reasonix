@@ -214,13 +214,13 @@ export const zhTW: Record<DictKey, string> = {
   "caps.hideDiagnostics": "隱藏診斷路徑",
 
   // 歡迎 / 空狀態
-  "welcome.tagline": "遙感資料處理 · GIS 分析 · GEE 雲端運算",
+  "welcome.tagline": "為長會話、低成本而生的遙感 AI 智能體。首次使用？輸入 /set 開始配置。",
   "welcome.hintCommands": "命令",
   "welcome.hintFiles": "引用檔案",
   "welcome.hintSend": "傳送",
-  "welcome.ex1": "用 GEE 提取太湖藍藻分佈",
-  "welcome.ex2": "Sentinel-2 影像水體指數計算並匯出 GeoTIFF",
-  "welcome.ex3": "QGIS 裡怎麼做鑲嵌和裁剪？",
+  "welcome.ex1": "幫我看看這個 tif 檔案的元資料",
+  "welcome.ex2": "把資料夾裡的 shp 全轉成 GeoJSON",
+  "welcome.ex3": "分析太湖 2023 年 Sentinel-2 的 NDVI",
 
   // 輸入框
   "composer.placeholder": "給 RS-Reasonix 發訊息…  ( / 命令 · @ 檔案 )",
@@ -1142,7 +1142,7 @@ export const zhTW: Record<DictKey, string> = {
   "caps.failureGroupNetwork": "{count} 個網路/權限異常",
   "caps.failureGroupOther": "{count} 個其他異常",
   "welcome.title": "歡迎使用 RS-Reasonix",
-  "welcome.ex4": "InSAR 形變監測資料預處理流程",
+  "welcome.ex4": "幫我找北京 2024 年的 Landsat 8 資料",
   "composer.normalMode": "對話模式",
   "composer.normalModeDesc": "直接對話或執行任務。",
   "composer.goalMode": "目標模式",
