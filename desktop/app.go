@@ -38,6 +38,7 @@ import (
 	"reasonix/internal/fileref"
 	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
+	"reasonix/internal/geo"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/memory"
@@ -352,6 +353,7 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
+	geo.ClosePreviewClient()
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
@@ -6251,4 +6253,16 @@ func (a *App) ConnectKey(apiKey string) (string, error) {
 		a.mu.Unlock()
 	}
 	return warning, nil
+}
+
+func (a *App) ProbeGeoEnv() string {
+	base, _ := a.activeWorkspaceBase()
+	if base == "" {
+		return `{"error":"no workspace"}`
+	}
+	preview, err := geo.GenerateEnvProbe(base)
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	return preview
 }
